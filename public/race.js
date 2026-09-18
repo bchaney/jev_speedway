@@ -3,6 +3,7 @@ import { PRICE_PER_MTOK } from "/lib/jev.mjs";
 const $ = (s) => document.querySelector(s);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
+const bucket = (v, arr) => { for (const [lim, name] of arr) if (v < lim) return name; return arr[arr.length - 1][1]; };
 
 // ---------- track: closed Catmull-Rom spline through control points ----------
 // Circuit of the Americas, traced by eye from the map (not survey data): the uphill T1 hairpin top-left, the esses across the
@@ -11,8 +12,8 @@ const COTA_CP = [[200,650],[150,400],[140,180],[170,90],[250,100],[330,160],[410
 const DEFAULT_CP = [[150,360],[200,180],[400,110],[650,120],[850,170],[980,320],[900,470],[760,520],[620,470],[540,360],[430,430],[330,600],[200,600],[130,500]];
 const SEG_N = 40;
 let pts = []; // {x,y,s,kappa}
-let L = 0, HAIRPIN = 0, BOOST_PAD = null;
-function buildTrack(CP, fixed) {
+let L = 0, FEATURES = []; // FEATURES: the lap as named corners and straights, in lap order (classifyTrack)
+function buildTrack(CP) {
   pts = [];
   for (let i = 0; i < CP.length; i++) {
     const p0 = CP[(i - 1 + CP.length) % CP.length], p1 = CP[i], p2 = CP[(i + 1) % CP.length], p3 = CP[(i + 2) % CP.length];
@@ -31,17 +32,52 @@ function buildTrack(CP, fixed) {
     let d = h2 - h1; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
     pts[i].kappa = d / (Math.hypot(c.x - a.x, c.y - a.y) || 1);
   }
-  // features: the hairpin is the tightest point; the pad goes on the straightest stretch
-  let best = 0; HAIRPIN = 0; for (const p of pts) if (Math.abs(p.kappa) > best) { best = Math.abs(p.kappa); HAIRPIN = p.s; }
-  const gap = (a, b) => Math.min(((a - b) % L + L) % L, ((b - a) % L + L) % L);
-  const window = (len, score, avoid) => { // best start s for a window of length len, by score, keeping clear of avoid points
-    let bestS = 0, bestV = -Infinity;
-    for (let s0 = 0; s0 < L; s0 += L / 200) { if (avoid.some((a) => gap(s0 + len / 2, a) < len / 2 + L * 0.06)) continue; const v = score(s0, s0 + len); if (v > bestV) { bestV = v; bestS = s0; } }
-    return bestS;
+  classifyTrack();
+}
+// ---------- track vocabulary ----------
+// The lap as a sequence of named features, the way a driver or a circuit designer talks about it. Corners are graded by the speed
+// the grip allows through them (kink, fast sweeper, medium corner, tight corner, hairpin), straights by length, and quick left-right
+// combinations are grouped into chicanes and esses. Corners are numbered T1, T2… from the start line, as on a real circuit.
+const K_IN = 0.004, K_OUT = 0.0025; // hysteresis, so a wobble in the spline's curvature does not split one corner into two
+const isCorner = (f) => f.kind === "corner" || f.kind === "chicane" || f.kind === "esses";
+const entryWords = (f) => bucket(f.limit / V_TOP, [[0.4, "brake very hard, down to walking pace"], [0.534, "brake hard"], [0.734, "brake, then carry good speed"], [0.999, "just a lift, barely any braking"], [1e9, "flat out"]]);
+function classifyTrack() {
+  const n = pts.length, sAt = (i) => pts[i % n].s + Math.floor(i / n) * L;
+  let start = pts.findIndex((p) => Math.abs(p.kappa) < K_OUT); if (start < 0) start = 0; // begin on a straight so no corner is cut in two
+  let runs = [], cur = null; // raw runs of one-directional curvature: {sign, i0, i1, peak}
+  for (let j = 0; j <= n; j++) {
+    const i = start + j, kk = pts[i % n].kappa, a = Math.abs(kk);
+    if (cur && (a < K_OUT || (a > K_IN && Math.sign(kk) !== cur.sign) || j === n)) { cur.i1 = i; runs.push(cur); cur = null; }
+    if (!cur && a > K_IN && j < n) cur = { sign: Math.sign(kk), i0: i, peak: 0 };
+    if (cur) cur.peak = Math.max(cur.peak, a);
+  }
+  runs = runs.map((r) => ({ ...r, s0: sAt(r.i0), s1: sAt(r.i1) })).filter((r) => r.s1 - r.s0 > 20);
+  const merged = []; // same direction with hardly any straight between: one double-apex corner
+  for (const r of runs) { const p = merged[merged.length - 1]; if (p && p.sign === r.sign && r.s0 - p.s1 < 30) { p.s1 = r.s1; p.peak = Math.max(p.peak, r.peak); p.apexes++; } else merged.push({ ...r, apexes: 1 }); }
+  const groups = []; // quick alternating flicks: two make a chicane, three or more make esses
+  for (const r of merged) { const g = groups[groups.length - 1], last = g?.[g.length - 1]; if (last && last.sign !== r.sign && r.s0 - last.s1 < 60 && r.s1 - r.s0 < 140 && last.s1 - last.s0 < 140) g.push(r); else groups.push([r]); }
+  const grade = (r) => {
+    const lim = Math.sqrt(GRIP / r.peak), len = r.s1 - r.s0;
+    const g = lim >= V_TOP ? (len < 120 ? "kink" : "gentle bend") : lim >= 110 ? "fast sweeper" : lim >= 80 ? "medium corner" : lim >= 60 ? "tight corner" : "hairpin";
+    return { limit: Math.min(lim, V_TOP), grade: (r.apexes > 1 ? "double-apex " : len > 220 && lim < V_TOP ? "long " : "") + g };
   };
-  const maxK = (a, b) => { let m = 0; for (let x = a; x <= b; x += 4) m = Math.max(m, Math.abs(at(x).kappa)); return m; };
-  const padS = fixed ? fixed.pad * L : window(L * 0.05, (a, b) => -maxK(a, b), [HAIRPIN]);
-  BOOST_PAD = { s0: padS, s1: padS + L * 0.05 };
+  const feats = []; let t = 0;
+  for (const g of groups.sort((a, b) => (a[0].s0 % L) - (b[0].s0 % L))) {
+    const first = t + 1; t += g.length;
+    const s0 = g[0].s0 % L, len = g[g.length - 1].s1 - g[0].s0, limit = Math.min(...g.map((r) => grade(r).limit));
+    const name = g.length === 1 ? `T${first} ${grade(g[0]).grade}` : `T${first}-T${t} ${limit < 80 ? "tight " : limit >= 110 ? "fast " : ""}${g.length === 2 ? "chicane" : "esses"}`;
+    feats.push({ kind: g.length === 1 ? "corner" : g.length === 2 ? "chicane" : "esses", name, s0, s1: s0 + len, mid: s0 + len / 2, len, limit, turns: g.length });
+  }
+  const straights = []; // whatever lies between corners, if it is long enough to be worth a name
+  for (let i = 0; i < feats.length; i++) {
+    const a = feats[i], b = feats[(i + 1) % feats.length], s0 = a.s1 % L, len = ((b.s0 - a.s1) % L + L) % L;
+    if (len >= 90) straights.push({ kind: "straight", s0, s1: s0 + len, mid: s0 + len / 2, len, limit: V_TOP });
+  }
+  if (!feats.length) straights.push({ kind: "straight", s0: 0, s1: L, mid: L / 2, len: L, limit: V_TOP });
+  const home = straights.find((f) => ((0 - f.s0) % L + L) % L < f.len) ?? straights.find((f) => f.s0 < 150); // the one the start line sits on, or begins just after it
+  const back = straights.filter((f) => f !== home).sort((a, b) => b.len - a.len)[0];
+  for (const f of straights) f.name = f === home ? "start/finish straight" : f === back && f.len >= 220 ? "back straight" : bucket(f.len, [[220, "short straight"], [450, "straight"], [1e9, "long straight"]]);
+  FEATURES = [...feats, ...straights].sort((a, b) => a.s0 - b.s0);
 }
 // Random circuit in the F1 idiom: a loop of "sectors" around the canvas centre, each one a straight, a sweeper, a chicane or a
 // hairpin that notches deep toward the middle. Points are placed by angle and radius, so the loop stays star-shaped and never
@@ -83,29 +119,26 @@ function trackOk() { // fits the canvas, not absurdly sharp, and no two separate
   }
   return true;
 }
-const snapshotTrack = () => ({ pts, L, HAIRPIN, BOOST_PAD });
-function setTrack(t) { ({ pts, L, HAIRPIN, BOOST_PAD } = t); }
+const snapshotTrack = () => ({ pts, L, FEATURES });
+function setTrack(t) { ({ pts, L, FEATURES } = t); BOOST_PAD = null; }
 function randomTrack() {
   for (let tries = 0; tries < 60; tries++) { buildTrack(randomCP()); if (trackOk()) return snapshotTrack(); }
-  buildTrack(DEFAULT_CP, { pad: 0.06 }); return snapshotTrack();
+  buildTrack(DEFAULT_CP); return snapshotTrack();
 }
 function describeTrack(t) { // words only, the way Jev likes its state
   setTrack(t);
-  let corners = 0, inCorner = false, straight = 0, longest = 0, maxK = 0;
-  for (const p of pts) {
-    const k = Math.abs(p.kappa); maxK = Math.max(maxK, k);
-    const c = k > 0.006; if (c && !inCorner) corners++; inCorner = c;
-    if (k < 0.003) { straight += L / pts.length; longest = Math.max(longest, straight); } else straight = 0;
-  }
+  const corners = FEATURES.filter(isCorner), straights = FEATURES.filter((f) => f.kind === "straight");
+  const tight = [...corners].sort((a, b) => a.limit - b.limit)[0], long = [...straights].sort((a, b) => b.len - a.len)[0];
+  const from0 = (f) => (((0 - f.s0) % L + L) % L < f.len ? 0 : ((f.s0 % L) + L) % L); // lap order, starting at the start line
   return {
     length: bucket(L, [[2000, "short lap"], [2300, "medium lap"], [1e9, "long lap"]]),
-    corners: `${corners} corners`,
-    tightest_corner: bucket(1 / maxK, [[35, "a very tight hairpin, well under walking pace"], [55, "a tight hairpin"], [90, "a firm corner"], [1e9, "only open sweepers"]]),
-    longest_straight: bucket(longest, [[200, "no real straight"], [350, "a short straight"], [550, "a long straight"], [1e9, "a very long straight"]]),
-    booster_pad: `on ${bucket(1 / Math.max(1e-4, ...Array.from({ length: 10 }, (_, i) => Math.abs(at(BOOST_PAD.s0 + i * (BOOST_PAD.s1 - BOOST_PAD.s0) / 9).kappa))), [[120, "a curve"], [1e9, "a straight"]])}, with ${nextFeature(BOOST_PAD.s1).name} ${bucket(nextFeature(BOOST_PAD.s1).dist, [[160, "close after it"], [400, "a little way after it"], [1e9, "far after it"]])}`,
+    corners: `${corners.reduce((a, f) => a + f.turns, 0)} corners`,
+    lap: [...FEATURES].sort((a, b) => from0(a) - from0(b)).map((f) => f.name).join(", "),
+    tightest_corner: tight ? `${tight.name}: ${entryWords(tight)}` : "no real corners",
+    longest_straight: long ? `${long.name}, ${bucket(long.len, [[220, "short"], [450, "a decent length"], [1e9, "very long"]])}` : "no real straight",
   };
 }
-const PRESETS = { original: () => buildTrack(DEFAULT_CP, { pad: 0.06 }), cota: () => buildTrack(COTA_CP) };
+const PRESETS = { original: () => buildTrack(DEFAULT_CP), cota: () => buildTrack(COTA_CP) };
 let trackDesign = null; // last request/response from asking Jev to pick a layout
 async function designTrack() { // code drafts, Jev judges: several random circuits, one Choice question
   const keys = ["A", "B", "C", "D", "E"], drafts = keys.map(randomTrack);
@@ -121,7 +154,7 @@ async function designTrack() { // code drafts, Jev judges: several random circui
   } catch (e) { note += ` ${e.message}`; }
   setTrack(drafts[keys.indexOf(pick)]);
   const d = state.layouts[pick];
-  return `Layout ${pick}: ${d.length}, ${d.corners}, ${d.tightest_corner}, ${d.longest_straight}; pad ${d.booster_pad}. ${note}`;
+  return `Layout ${pick}: ${d.length}, ${d.corners}, tightest ${d.tightest_corner}; lap: ${d.lap}. ${note}`;
 }
 const WIDTH = 46;
 function at(s) { // spline points are unevenly spaced, so look the index up by accumulated arc length
@@ -141,16 +174,36 @@ function turnAhead(s, look) { // sign of the next significant corner (+1 right, 
   let best = 0; for (let d = 0; d <= look; d += 10) { const k = at(s + d).kappa; if (Math.abs(k) > Math.abs(best)) best = k; }
   return Math.abs(best) > 0.004 ? Math.sign(best) : 0;
 }
-buildTrack(DEFAULT_CP, { pad: 0.06 }); // the hand-made track keeps its hand-placed pad
-function nextFeature(s) { // nearest upcoming semantic feature
-  const list = [
-    { name: "hairpin", s: HAIRPIN, then: "the run to the next feature" },
-    { name: "booster pad", s: BOOST_PAD.s0, then: "a fast sweeping section" },
-  ];
-  let bestD = Infinity, best = null;
-  for (const f of list) { const d = ((f.s - s) % L + L) % L; if (d < bestD) { bestD = d; best = f; } }
-  return { ...best, dist: bestD };
+buildTrack(DEFAULT_CP);
+// ---------- booster pad: a race event, not a track feature ----------
+// Twice per race, at random moments, a pad appears on a random straight for a short while. Crossing it recharges the boost of a
+// driver who has already spent theirs this lap, so it rewards whoever spent early and is bold enough to go for it.
+let BOOST_PAD = null; // {s0, s1, mid, len, until, name, kind} while one is live
+const PAD_LIFE = 15; // seconds it stays on the road
+function spawnPad() {
+  const straights = FEATURES.filter((f) => f.kind === "straight"), long = straights.filter((f) => f.len >= 200);
+  const on = (long.length ? long : straights)[Math.floor(Math.random() * Math.max(1, straights.length))], len = L * 0.05;
+  const s0 = on ? (on.s0 + Math.random() * Math.max(0, on.len - len)) % L : Math.random() * L;
+  BOOST_PAD = { kind: "pad", name: "booster pad", id: race.t, s0, s1: s0 + len, mid: s0 + len / 2, len, limit: V_TOP, until: race.t + PAD_LIFE };
+  log(`⚡ A booster pad appears on the ${on ? on.name : "track"}: cross it to recharge the boost`);
 }
+function padStep() { // spawn when the leader passes the next scheduled point in the race, and retire it when its time is up
+  if (BOOST_PAD && race.t > BOOST_PAD.until) { BOOST_PAD = null; log("The booster pad fades away"); }
+  const prog = Math.max(...cars.map((c) => c.s)) / (race.laps * L);
+  if (!BOOST_PAD && race.padAt.length && prog >= race.padAt[0]) { race.padAt.shift(); spawnPad(); }
+}
+function nextFeature(s) { // nearest upcoming feature; a feature still counts as upcoming until the car is past its midpoint
+  const list = BOOST_PAD ? [...FEATURES, BOOST_PAD] : FEATURES;
+  let bestD = Infinity, best = -1;
+  list.forEach((f, i) => {
+    const into = ((s - f.s0) % L + L) % L, d = into < f.len / 2 ? 0 : ((f.s0 - s) % L + L) % L;
+    if (d < bestD || (d === bestD && f.len < list[best].len)) { bestD = d; best = i; } // ties (the pad on a straight) go to the smaller feature
+  });
+  const f = list[best], ahead = (g) => ((g.s0 - f.mid) % L + L) % L; // the track feature that begins soonest after this one's midpoint
+  const after = FEATURES.reduce((a, g) => (ahead(g) < ahead(a) ? g : a));
+  return { ...f, dist: bestD, then: after.name, entry: entryWords(f) };
+}
+function featureAt(s) { return FEATURES.find((f) => ((s - f.s0) % L + L) % L < f.len); } // the feature the car is in right now, if any
 
 // ---------- drivers ----------
 const DRIVERS = [
@@ -160,8 +213,8 @@ const DRIVERS = [
   { name: "Pip", color: "#e879f9", traits: "nervous rookie, avoids contact, cautious into corners, brave on straights" },
 ];
 const cars = [];
-let race = { running: false, laps: 3, t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [] };
-const bucket = (v, arr) => { for (const [lim, name] of arr) if (v < lim) return name; return arr[arr.length - 1][1]; };
+const newRace = (running) => ({ running, laps: Number($("#laps").value) || 3, t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [], padAt: [0.1 + Math.random() * 0.35, 0.55 + Math.random() * 0.3] }); // padAt: fractions of the race distance at which a pad appears
+let race = newRace(false);
 
 function resetCars() {
   cars.length = 0;
@@ -183,6 +236,7 @@ function advance(c, ds) { // move along the track; laps are counted here so spin
 }
 function step(dt) {
   race.t += dt;
+  padStep();
   const order = ranking();
   for (const c of cars) {
     if (c.done) { c.v = lerp(c.v, 60, dt); advance(c, c.v * dt); continue; }
@@ -195,12 +249,10 @@ function step(dt) {
     c.lat = lerp(c.lat, laneT, dt * 3);
     // pace: how close to the limit into the next corner
     const paceF = { attack: 1.12, steady: 1.0, cautious: 0.86 }[c.dec.pace] ?? 1;
-    const onPad = sm > BOOST_PAD.s0 && sm < BOOST_PAD.s1;
-    const ceil = onPad ? V_TOP * 1.2 : V_TOP; // the pad raises the ceiling but still respects the corners, so it never punishes a careful driver
-    let target = ceil;
-    for (let d = 0; d < look; d += 5) { const v = Math.min(ceil, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
+    if (BOOST_PAD && sm > BOOST_PAD.s0 && sm < BOOST_PAD.s1 && c.padId !== BOOST_PAD.id) { c.padId = BOOST_PAD.id; if (!c.boostAvail) { c.boostAvail = true; log(`⚡ ${c.name} crosses the pad and recharges the boost`); } } // one recharge per car per pad
+    let target = V_TOP;
+    for (let d = 0; d < look; d += 5) { const v = Math.min(V_TOP, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
     if (c.dec.overtake) target *= 1.06;
-    if (onPad) c.v = Math.max(c.v, Math.min(target, c.v + 55 * dt));
     if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.dec.boost = false; c.boostT = 1.4; log(`${c.name} hits the boost`); } // consume the decision so a new lap needs a fresh call
     if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; } // the driver's own boost ignores the corner cap: boosting into a corner is the risk Jev is asked about
     // blocking: car directly ahead in same lane caps speed
@@ -209,7 +261,7 @@ function step(dt) {
     if (c.v < target) c.v = Math.min(target, c.v + ACCEL * dt * (c.boostT > 0 ? 2 : 1)); else c.v = Math.max(target, c.v - BRAKE * dt);
     // grip check: over the limit of the actual path is a risk that grows with the overshoot, not a certainty; straights never spin
     const over = c.v / (cornerLimit(sm, c.lat) * 1.05) - 1; // 5% tolerance so a steady car at the limit is safe; attack (12% over) is not
-    if (over > 0 && Math.random() < over * dt * 8) { c.spin = 1.2; c.v *= 0.35; log(`${c.name} spins out in the ${nextFeature(sm).dist < 60 ? nextFeature(sm).name : "corner"}!`); }
+    if (over > 0 && Math.random() < over * dt * 8) { c.spin = 1.2; c.v *= 0.35; { const f = featureAt(sm) ?? nextFeature(sm); log(`${c.name} spins out ${f.kind === "straight" ? "on" : "in"} ${f.name}!`); } }
     advance(c, c.v * dt * pathAt(sm, c.lat).progress); // inside line covers centreline distance faster
     // think
     c.nextThink -= dt;
@@ -228,9 +280,9 @@ function buildState(c, order) {
   const laneName = (lat) => { const r = lat * c.turn; return r > 0.3 ? "inside" : r < -0.3 ? "outside" : "middle"; }; // relative to the next corner
   const desc = (o, g) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), lane: laneName(o.lat), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
   return {
-    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
+    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : BOOST_PAD ? "used this lap, but a booster pad is on the track and crossing it recharges it" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
     car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable" },
-    track_ahead: { next: f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), after_that: f.then, hairpin_note: "the hairpin is the tightest corner; entering it fast without braking causes a spin" },
+    track_ahead: { next: f.kind === "pad" ? "booster pad (crossing it recharges a spent boost)" : f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
     rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0) },
   };
 }
@@ -273,9 +325,17 @@ function draw() {
   ctx.strokeStyle = "#1c2233"; ctx.lineWidth = WIDTH + 10; tracePath(); ctx.stroke();
   ctx.strokeStyle = "#2a3247"; ctx.lineWidth = WIDTH; tracePath(); ctx.stroke();
   ctx.setLineDash([10, 14]); ctx.strokeStyle = "#3d4763"; ctx.lineWidth = 2; tracePath(); ctx.stroke(); ctx.setLineDash([]);
-  // booster
-  ctx.strokeStyle = "#facc15"; ctx.lineWidth = WIDTH - 8; ctx.globalAlpha = 0.35; ctx.beginPath(); for (let s = BOOST_PAD.s0; s <= BOOST_PAD.s1; s += 6) { const p = at(s); s === BOOST_PAD.s0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); } ctx.stroke(); ctx.globalAlpha = 1;
-  label("BOOST", at((BOOST_PAD.s0 + BOOST_PAD.s1) / 2).x, at((BOOST_PAD.s0 + BOOST_PAD.s1) / 2).y - 36, "#facc15"); label("HAIRPIN", at(HAIRPIN).x, at(HAIRPIN).y + 40, "#8a93a6");
+  // booster pad, while one is live
+  if (BOOST_PAD) {
+    const left = BOOST_PAD.until - race.t, pulse = 0.3 + 0.15 * Math.sin(race.t * 6);
+    ctx.strokeStyle = "#facc15"; ctx.lineWidth = WIDTH - 8; ctx.globalAlpha = Math.min(1, left / 2) * pulse; ctx.beginPath(); for (let s = BOOST_PAD.s0; s <= BOOST_PAD.s1; s += 6) { const p = at(s); s === BOOST_PAD.s0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); } ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  for (const f of BOOST_PAD ? [...FEATURES, BOOST_PAD] : FEATURES) { // name every feature, pushed off the road: to the outside of a corner, away from the middle for a straight
+    const p = at(f.mid), nx = Math.cos(p.h + Math.PI / 2), ny = Math.sin(p.h + Math.PI / 2);
+    const out = Math.sign(nx * (p.x - 550) + ny * (p.y - 370)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : f.kind === "pad" ? -out : out, off = WIDTH / 2 + 14; // the pad label goes inside, so it never sits on its straight's label
+    const dx = nx * side, align = dx > 0.4 ? "left" : dx < -0.4 ? "right" : "center"; // anchor the text on the side away from the road
+    label(f.name, p.x + dx * off, p.y + ny * side * off + 4, f.kind === "pad" ? "#facc15" : isCorner(f) ? "#8a93a6" : "#5d6780", align);
+  }
   // start line
   const s0 = at(0); ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(s0.x + Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y + Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.lineTo(s0.x - Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y - Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.stroke();
   // cars
@@ -289,7 +349,11 @@ function draw() {
   }
 }
 function tracePath() { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); }
-function label(t, x, y, col) { ctx.fillStyle = col; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center"; ctx.fillText(t, x, y); ctx.textAlign = "left"; }
+function label(t, x, y, col, align = "center") { // kept inside the canvas
+  ctx.fillStyle = col; ctx.font = "bold 11px sans-serif"; ctx.textAlign = align;
+  const w = ctx.measureText(t).width, left = align === "left" ? x : align === "right" ? x - w : x - w / 2;
+  ctx.fillText(t, x + clamp(left, 4, cv.width - w - 4) - left, clamp(y, 12, cv.height - 4)); ctx.textAlign = "left";
+}
 
 let selected = null;
 function renderSide() {
@@ -312,13 +376,22 @@ function log(m) { logs.unshift(`<div><b>${race.t.toFixed(1)}s</b> ${m}</div>`); 
 
 // ---------- loop & init ----------
 let last = 0, paused = false;
-function frame(t) { const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t; if (race.running && !paused) step(dt); draw(); requestAnimationFrame(frame); }
+function frame(t) { const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t; if (race.running && !paused) step(dt); draw(); syncPlay(); requestAnimationFrame(frame); }
+function syncPlay() { // one button: play starts or resumes, pause pauses; it reads the race so ending, resetting or changing track all update it
+  const playing = race.running && !paused, title = playing ? "Pause" : race.running ? "Resume" : "Start race";
+  const b = $("#play"); if (b.title !== title) { b.textContent = playing ? "❚❚" : "▶"; b.title = title; b.setAttribute("aria-label", title); }
+}
+function resetRace() { race = newRace(false); BOOST_PAD = null; paused = false; logs.length = 0; resetCars(); renderSide(); $("#log").innerHTML = ""; }
 async function init() {
   const cfg = await fetch("/api/config").then((r) => r.json());
   const live = Object.entries(cfg.providers).find(([k, p]) => k !== "mock" && p.hasKey);
   const ps = $("#provider"); ps.innerHTML = Object.entries(cfg.providers).map(([k, p]) => `<option value="${k}" ${p.hasKey ? "" : "disabled"}>${p.label}</option>`).join(""); ps.value = live ? live[0] : "mock";
   const ms = $("#model"); const fill = () => { ms.innerHTML = cfg.providers[ps.value].models.map((m) => `<option>${m}</option>`).join(""); }; fill(); ps.addEventListener("change", fill);
-  $("#start").addEventListener("click", () => { race = { running: true, laps: Number($("#laps").value), t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [] }; logs.length = 0; resetCars(); paused = false; log("Lights out!"); renderSide(); });
+  $("#play").addEventListener("click", () => {
+    if (race.running) { paused = !paused; return; }
+    race = newRace(true); BOOST_PAD = null; logs.length = 0; resetCars(); paused = false; log("Lights out!"); renderSide();
+  });
+  $("#reset").addEventListener("click", resetRace);
   $("#randomize").addEventListener("click", async () => {
     const btn = $("#randomize"); btn.disabled = true; btn.textContent = "Drafting…";
     race.running = false; logs.length = 0; log("Drafting five circuits and asking Jev to pick one…"); renderSide();
@@ -326,7 +399,6 @@ async function init() {
     resetCars(); log(summary); renderSide(); $("#raw").textContent = JSON.stringify(trackDesign, null, 2);
     btn.disabled = false; btn.textContent = "New track";
   });
-  $("#pause").addEventListener("click", () => { paused = !paused; $("#pause").textContent = paused ? "Resume" : "Pause"; });
   const want = new URLSearchParams(location.search).get("track");
   if (want === "random") setTrack(randomTrack()); else if (PRESETS[want]) { PRESETS[want](); $("#preset").value = want; }
   $("#preset").addEventListener("change", () => { PRESETS[$("#preset").value](); race.running = false; logs.length = 0; resetCars(); log($("#preset").selectedOptions[0].textContent); renderSide(); });

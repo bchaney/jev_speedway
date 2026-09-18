@@ -16,4 +16,7 @@ No dependencies; Node 20+. `server.mjs` serves `public/` and proxies `/api/evalu
 `public/race.js` is the whole game: track spline, physics, the per-driver state builder, the Jev questions, and rendering.
 Tracks: the original, a by-eye Circuit of the Americas, or **New track**, where code drafts five random F1-style circuits,
 describes each in words, and Jev picks the one that should make the best race for these drivers.
+Each track is classified into named features in circuit vocabulary (kinks, sweepers, medium and tight corners, hairpins,
+chicanes, esses, short/long/back/start-finish straights, numbered T1, T2… from the start line); the names label the map, tell
+each driver what is coming and how hard to brake for it, and describe the drafts Jev chooses between.
 Click a driver card to see its last request and response.

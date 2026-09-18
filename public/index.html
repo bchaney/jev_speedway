@@ -13,7 +13,7 @@ header h1 { font-size:15px; margin:0; } header .sub { color:var(--muted); font-s
 .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .ctl label { color:var(--muted); font-size:12px; display:flex; gap:4px; align-items:center; }
 select, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:5px 9px; }
-button { cursor:pointer; } button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
+button { cursor:pointer; } button.icon { width:32px; padding:4px 0; text-align:center; font-size:14px; line-height:1; } button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
 main { display:grid; grid-template-columns: 1fr 380px; gap:10px; padding:10px 14px; }
 canvas { width:100%; background:#0f1320; border:1px solid var(--line); border-radius:10px; display:block; }
 .side { display:flex; flex-direction:column; gap:8px; overflow:auto; max-height: calc(100vh - 70px); }
@@ -41,8 +41,8 @@ pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--lin
     <label>Model <select id="model"></select></label>
     <label>Laps <select id="laps"><option>2</option><option selected>3</option><option>5</option></select></label>
     <label>Think every <select id="tick"><option value="500">0.5 s</option><option value="800" selected>0.8 s</option><option value="1500">1.5 s</option></select></label>
-    <button id="start" class="primary">Start race</button>
-    <button id="pause">Pause</button>
+    <button id="play" class="primary icon" title="Start race" aria-label="Start race">▶</button>
+    <button id="reset" class="icon" title="Reset the race" aria-label="Reset the race">↺</button>
     <label>Track <select id="preset"><option value="original">Original</option><option value="cota">Circuit of the Americas</option></select></label>
     <button id="randomize" title="Code drafts five random circuits; Jev picks the one that makes the best race for these drivers">New track</button>
   </div>
