@@ -170,7 +170,7 @@ function at(s) { // spline points are unevenly spaced, so look the index up by a
 }
 function pos(s, lat) { const p = at(s); return { x: p.x + Math.cos(p.h + Math.PI / 2) * lat * WIDTH * 0.42, y: p.y + Math.sin(p.h + Math.PI / 2) * lat * WIDTH * 0.42, h: p.h }; }
 // features (by track distance)
-const V_TOP = 37.5, GRIP = 30, ACCEL = 16, BRAKE = 40, CRAWL = 10, DRAFT_RANGE = 22.5, STEER_RATE = 2; // m/s, m/s² and m; top speed is 135 km/h. CRAWL: slower than any corner needs, and as slow as braking or coasting will take a car. GRIP (lateral, about 3 g) sized so a hairpin limits to ~19 m/s and the sweepers to 25-37
+const V_TOP = 37.5, GRIP = 30, ACCEL = 16, BRAKE = 40, CRAWL = 10, DRAFT_RANGE = 22.5, STEER_RATE = 2, STEER_DIST = 15; // m/s, m/s² and m; top speed is 135 km/h. CRAWL: slower than any corner needs, and as slow as braking or coasting will take a car. GRIP (lateral, about 3 g) sized so a hairpin limits to ~19 m/s and the sweepers to 25-37
 // Lateral offset changes the real path: the inside of a corner is shorter but tighter, the outside longer but more forgiving.
 // Positive kappa is a right-hand turn on screen; positive lat is the right-hand side of the road.
 function pathAt(s, lat) { const k = at(s).kappa; const denom = clamp(1 - k * lat * WIDTH * 0.42, 0.6, 1.4); return { kappa: k / denom, progress: 1 / denom }; }
@@ -210,7 +210,7 @@ const DRIVERS = [
   { name: "Pip", color: "#e879f9", traits: "nervous rookie, avoids contact, cautious into corners, brave on straights" },
 ];
 const cars = [];
-const newRace = (running) => ({ running, laps: Number($("#laps").value) || 3, t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [] });
+const newRace = (running) => ({ running, laps: Number($("#laps").value) || 3, t: 0, finished: [], contacts: 0, reqs: 0, tokens: 0, cost: 0, latency: [] });
 let race = newRace(false);
 
 function gridOrder() { // drivers with a grid number take that slot; the rest fill the remaining slots in list order
@@ -263,9 +263,15 @@ function step(dt) {
     // an overtake call pulls the car out to the open side of the rival directly ahead; a slingshot does the same with a burst
     let blocker = null, bg = Infinity; for (const o of cars) if (o !== c && !o.done) { let gap = ((o.s - c.s) % L + L) % L; if (gap > L / 2) gap -= L; if (gap > -CAR_LEN && gap < 20 && gap < bg) { blocker = o; bg = gap; } } // ahead or alongside: the move is held until the car is clear past
     const passing = (c.slingT > 0 && c.slingFrom && !c.slingFrom.done && ((c.slingFrom.s - c.s) % L + L) % L < 15) ? c.slingFrom : (c.dec.overtake && blocker);
-    const latT = passing ? -Math.sign(passing.lat || -c.lat || 1) * 0.85 : ({ inside: 0.85 * turn, middle: 0, outside: -0.85 * turn }[c.dec.line] ?? 0);
+    let latT = passing ? -Math.sign(passing.lat || -c.lat || 1) * 0.85 : ({ inside: 0.85 * turn, middle: 0, outside: -0.85 * turn }[c.dec.line] ?? 0);
+    // the code knows where every car is: never steer into one alongside. A car overlapping nose to tail on the side the move is
+    // heading for, within a car's width plus a margin, holds the move (and eases the car away if they are already too close)
+    for (const o of cars) if (o !== c && !o.done) { let gap = ((o.s - c.s) % L + L) % L; if (gap > L / 2) gap -= L; const dl = (o.lat - c.lat) * LAT_M; if (Math.abs(gap) < CAR_LEN + 1 && Math.abs(dl) < CAR_W + SIDE_GAP && Math.sign(latT - c.lat) === Math.sign(dl)) latT = c.lat - Math.sign(dl) * Math.max(0, CAR_W + SIDE_GAP / 2 - Math.abs(dl)) / LAT_M; }
     c.steer = clamp((latT - c.lat) * 3, -1, 1); // wheel angle the code applies to get there, shown on the instruments
-    c.lat = clamp(c.lat + c.steer * STEER_RATE * dt, -1, 1);
+    // a car crosses the road only as it moves forward: full lock shifts one road unit per STEER_DIST m of travel (capped at
+    // STEER_RATE), so a slow car cannot slide sideways, and the sprite yaws into the move instead of translating
+    const latRate = c.steer * Math.min(STEER_RATE, c.v / STEER_DIST);
+    c.lat = clamp(c.lat + latRate * dt, -1, 1); c.yaw = Math.atan2(latRate * LAT_M, Math.max(c.v, 0.1));
     const paceF = { attack: 1.15, steady: 0.95, cautious: 0.84 }[c.dec.pace] ?? 0.95; // steady sits just inside the grip tolerance, attack well past it
     const mult = c.slingT > 0 ? 1.18 : 1 + 0.1 * towF; // the tow and the slingshot raise the ceiling
     let target = V_TOP * mult;
@@ -274,8 +280,14 @@ function step(dt) {
     if (c.dec.overtake) target *= 1.06;
     if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.dec.boost = false; c.boostT = 1.4; log(`${c.name} hits the boost`); } // consume the decision so a new lap needs a fresh call
     if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; } // the driver's own boost ignores the corner cap: boosting into a corner is the risk Jev is asked about
-    // blocking: a car directly ahead on the same part of the road caps speed
-    c.heldBy = null; for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 7 && Math.abs(o.lat - c.lat) < 0.5 && o.v * 1.0 < target) { c.heldBy = o; target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); } }
+    // following: a car ahead on the same part of the road sets a safe gap (a car length plus a short time headway; tighter when a pass
+    // is called). Closing speed is proportional to the spare gap, so the car eases up to it instead of running into the back
+    c.heldBy = null; for (const o of cars) if (o !== c && !o.done) {
+      const gap = ((o.s - c.s) % L + L) % L, dl = Math.abs(o.lat - c.lat) * LAT_M;
+      if (gap <= 0 || gap > 30 || dl >= CAR_W + SIDE_GAP) continue;
+      const safe = CAR_LEN + (c.dec.overtake ? 0.3 : 0.6) + c.v * (c.dec.overtake ? 0.02 : 0.05), cap = Math.max(0, o.v + (gap - safe) * 2.5);
+      if (cap < target) { c.heldBy = o; target = cap; }
+    }
     // accelerate / brake
     const accel = ACCEL * (c.boostT > 0 ? 2 : c.slingT > 0 ? 1.6 : 1 + 0.5 * towF);
     c.braking = c.v > target + 0.25; c.throttle = c.braking ? 0 : 1; // holding the cap still counts as on the throttle
@@ -294,7 +306,7 @@ function step(dt) {
 // ---------- contact ----------
 // Cars are 6 m long and 3.25 m wide for contact (drawn a touch smaller). Two racing cars on the same bit of road are pushed apart: nose to tail along the track,
 // with the faster car handing speed to the one it hits; alongside, sideways off their lines. A hard hit can spin the car that took it.
-const CAR_LEN = 6, CAR_W = 3.25, LAT_M = WIDTH * 0.42; // LAT_M: metres of road per unit of lat
+const CAR_LEN = 6, CAR_W = 3.25, SIDE_GAP = 1, LAT_M = WIDTH * 0.42; // SIDE_GAP: the sideways margin the driving keeps to a car alongside, m. LAT_M: metres of road per unit of lat
 const lastBump = new Map(); // pair -> race time, so one scrape does not fill the log
 function collide() {
   for (let i = 0; i < cars.length; i++) for (let j = i + 1; j < cars.length; j++) {
@@ -313,7 +325,7 @@ function collide() {
       const wa = b.v / (a.v + b.v + 1e-6); a.lat = clamp(a.lat - dir * push * wa, -1, 1); b.lat = clamp(b.lat + dir * push * (1 - wa), -1, 1);
       hard = 2 + Math.abs(a.v - b.v) * 0.5; kind = "side by side with"; victim = a.v < b.v ? a : b;
     }
-    const other = (c) => (c === a ? b : a);
+    const other = (c) => (c === a ? b : a); race.contacts++;
     for (const c of [a, b]) c.contact = { with: other(c).name, t: race.t, kind: c === back ? (kind === "rear-ended" ? "ran into the back of" : kind) : (kind === "rear-ended" ? "was hit from behind by" : kind) };
     const key = `${a.name}|${b.name}`;
     if (hard > 3 && (lastBump.get(key) ?? -9) < race.t - 1.5) {
@@ -333,7 +345,7 @@ const wheelWords = (s) => (Math.abs(s) < 0.1 ? "centred" : `${Math.round(s * 90)
 function buildState(c, order) {
   const sm = ((c.s % L) + L) % L, p = order.indexOf(c) + 1, f = nextFeature(sm), n = speedNeed(c, sm);
   const need = Math.max(0, (c.v * c.v - n.limit * n.limit) / (2 * BRAKE)); // road needed to slow to what the road needs, at full braking
-  const x = { c, sm, p, f, n, need, corner: nextCorner(sm), gripLimit: cornerLimit(sm, c.lat), vtop: V_TOP, cars, race, trace: {} };
+  const x = { c, sm, p, f, n, need, corner: nextCorner(sm), gripLimit: cornerLimit(sm, c.lat), vtop: V_TOP, cars, race, latM: LAT_M, width: WIDTH, trace: {} };
   const gapTo = (o) => o ? (((o.s - c.s) % L + L) % L) : null;
   let ahead = null, behind = null;
   for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < NEAR && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < NEAR && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
@@ -396,7 +408,7 @@ function draw() {
   // cars
   for (const c of cars) {
     const p = pos(c.s, c.lat), X = px(p.x), Y = px(p.y);
-    ctx.save(); ctx.translate(X, Y); ctx.rotate(p.h); if (c.spin > 0) ctx.rotate(c.spin * 9);
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(p.h + (c.yaw ?? 0)); if (c.spin > 0) ctx.rotate(c.spin * 9);
     if (c.boostT > 0) { ctx.fillStyle = "rgba(250,204,21,.8)"; ctx.fillRect(-22, -4, 10, 8); }
     if (c.slingT > 0) { ctx.fillStyle = "rgba(56,189,248,.8)"; ctx.fillRect(-34, -3, 22, 6); } else if (c.towing) { ctx.fillStyle = `rgba(56,189,248,${(0.25 + 0.5 * c.tow).toFixed(2)})`; ctx.fillRect(-20, -2, 8, 4); }
     if (c.contact && race.t - c.contact.t < 0.3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.globalAlpha = 1 - (race.t - c.contact.t) / 0.3; ctx.strokeRect(-14, -9, 28, 18); ctx.globalAlpha = 1; } // flash on contact
@@ -425,7 +437,7 @@ function renderSide() { // standings and stats; the driver cards are built once 
   const order = ranking();
   $("#standings").innerHTML = order.map((c, i) => `<div><span style="color:${c.color}">P${i + 1} ${c.name}</span><span>${c.done ? `finished ${c.finishT.toFixed(1)}s` : `lap ${Math.min(c.lap + 1, race.laps)} · ${Math.round(c.v * KMH)} km/h`}</span></div>`).join("");
   const avgLat = race.latency.length ? Math.round(race.latency.reduce((a, b) => a + b, 0) / race.latency.length) : 0;
-  $("#stats").textContent = `${race.reqs} Jev requests · ${race.tokens.toLocaleString()} input tokens · $${race.cost.toFixed(5)} · avg ${avgLat} ms`;
+  $("#stats").textContent = `${race.contacts} contacts · ${race.reqs} Jev requests · ${race.tokens.toLocaleString()} input tokens · $${race.cost.toFixed(5)} · avg ${avgLat} ms`;
   $("#racestate").textContent = race.running ? `Lap ${currentLap()} / ${race.laps} · ${race.t.toFixed(1)}s` : race.finished.length ? `Finished · ${race.t.toFixed(1)}s` : "";
   if (document.querySelectorAll("#drivers .card").length !== cars.length) buildCards();
   updateCards();

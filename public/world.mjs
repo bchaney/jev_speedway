@@ -6,10 +6,15 @@
 // Pure: everything a case looks at comes in on x, so this module can be rendered as documentation without the game running.
 // A case is { when: condition in words, test(x, v), say: phrase or (x, v) => phrase, sample: what a computed phrase looks like }.
 // x is the context: c (car), f (next feature), n (what sets the speed: the corner it is in, or the next feature and its distance), need
-// (full-braking distance to that speed), p (position), o and g (a rival and its gap), corner (next corner), gripLimit, vtop, cars, race.
+// (full-braking distance to that speed), p (position), o and g (a rival and its gap), corner (next corner), gripLimit, vtop, cars, race,
+// latM (metres of road per unit of lat) and width (road width, m). Every phrase that grades a quantity also gives the measurement.
 export const always = () => true;
-export const ladder = (unit, steps) => steps.map(([lim, say], i) => ({ when: i === 0 ? `under ${lim} ${unit}` : lim >= 1e9 ? `${steps[i - 1][0]} ${unit} or more` : `${steps[i - 1][0]} to ${lim} ${unit}`, test: (x, v) => v < lim, say })); // a bucket, with its conditions spelled out
-const ROAD = ladder("across the road", [[-0.7, "at the left edge"], [-0.25, "left of centre"], [0.25, "centre of the road"], [0.7, "right of centre"], [1e9, "at the right edge"]]);
+// a bucket, with its conditions spelled out; fmt(x, v) appends the measurement to the word, and each step's third entry is a sample value for the docs
+export const ladder = (unit, steps, fmt) => steps.map(([lim, say, sampleV], i) => ({ when: i === 0 ? `under ${lim} ${unit}` : lim >= 1e9 ? `${steps[i - 1][0]} ${unit} or more` : `${steps[i - 1][0]} to ${lim} ${unit}`, test: (x, v) => v < lim, say: fmt ? (x, v) => `${say}, ${fmt(x, v)}` : say, sample: fmt ? `${say}, ${fmt(SAMPLE, sampleV)}` : undefined }));
+const SAMPLE = { latM: 5.67, width: 13.5, vtop: 37.5, c: { v: 31 }, o: { v: 33 } }; // stands in for x when the docs page renders a sample
+const metres = (v) => `${Math.round(v)} m`, kmh = (v) => `${Math.round(v * 3.6)} km/h`;
+const across = (x, lat) => { const d = lat * x.latM; return Math.abs(d) < 0.05 ? "on the centre line" : `${Math.abs(d).toFixed(1)} m ${d < 0 ? "left" : "right"} of the centre line`; }; // lat is −1..1, the road is x.width wide
+const ROAD = ladder("across the road", [[-0.7, "at the left edge", -0.9], [-0.25, "left of centre", -0.5], [0.25, "centre of the road", 0.1], [0.7, "right of centre", 0.5], [1e9, "at the right edge", 0.9]], (x, v) => across(x, v));
 export const WORLD = {
   "driver.position": { about: "place in the running order", value: (x) => x.p, cases: [
     { when: "leading", test: (x, v) => v === 1, say: (x, v) => `${v} of ${x.cars.length}`, sample: "1 of 4" },
@@ -21,17 +26,17 @@ export const WORLD = {
   "driver.status": { about: "whether the car is under control", cases: [
     { when: "spinning", test: (x) => x.c.spin > 0, say: "recovering from a spin" },
     { when: "otherwise", test: always, say: "racing" }] },
-  "car.speed": { about: "speed, km/h (top speed is 135)", value: (x) => x.c.v * 3.6, cases: ladder("km/h", [[45, "slow"], [85, "cruising"], [120, "fast"], [1e9, "flat out"]]) },
+  "car.speed": { about: "speed, km/h (top speed is 135)", value: (x) => x.c.v * 3.6, cases: ladder("km/h", [[45, "slow", 30], [85, "cruising", 70], [120, "fast", 105], [1e9, "flat out", 132]], (x, v) => `${Math.round(v)} km/h`) },
   "car.situation": { about: "the car against what the road needs: the corner it is in, or the next feature and the braking distance to it", value: (x) => x.c.v, cases: [
-    { when: "in a corner, more than 2% over its speed", test: (x, v) => x.n.here && v > x.n.limit * 1.02, say: (x) => `in ${x.n.f.name} over its limit: the tyres will not hold this for long`, sample: "in T4 tight corner over its limit: the tyres will not hold this for long" },
-    { when: "in a corner, within 10% of its speed", test: (x, v) => x.n.here && v > x.n.limit * 0.9, say: (x) => `in ${x.n.f.name} right at its limit`, sample: "in T4 tight corner right at its limit" },
-    { when: "in a corner, well under its speed", test: (x) => x.n.here, say: (x) => `in ${x.n.f.name} with speed in hand`, sample: "in T4 tight corner with speed in hand" },
+    { when: "in a corner, more than 2% over its speed", test: (x, v) => x.n.here && v > x.n.limit * 1.02, say: (x) => `in ${x.n.f.name} over its limit: the tyres will not hold this for long (${kmh(x.c.v)} against ${kmh(x.n.limit)} on this line)`, sample: "in T4 tight corner over its limit: the tyres will not hold this for long (74 km/h against 68 km/h on this line)" },
+    { when: "in a corner, within 10% of its speed", test: (x, v) => x.n.here && v > x.n.limit * 0.9, say: (x) => `in ${x.n.f.name} right at its limit (${kmh(x.c.v)} against ${kmh(x.n.limit)} on this line)`, sample: "in T4 tight corner right at its limit (66 km/h against 68 km/h on this line)" },
+    { when: "in a corner, well under its speed", test: (x) => x.n.here, say: (x) => `in ${x.n.f.name} with speed in hand (${kmh(x.c.v)} against ${kmh(x.n.limit)} on this line)`, sample: "in T4 tight corner with speed in hand (52 km/h against 68 km/h on this line)" },
     { when: "next feature needs no braking (a straight or a kink)", test: (x) => x.n.limit >= x.vtop, say: "nothing ahead needs braking" },
-    { when: "already at or under the speed it needs", test: (x, v) => v <= x.n.limit, say: (x) => `already at the speed ${x.n.f.name} needs`, sample: "already at the speed T4 tight corner needs" },
-    { when: "within 115% of the full-braking distance", test: (x) => x.n.dist <= x.need * 1.15, say: (x) => `at the braking point for ${x.n.f.name}: steady brakes now, attack commits past the limit`, sample: "at the braking point for T4 tight corner: steady brakes now, attack commits past the limit" },
-    { when: "within twice the full-braking distance", test: (x) => x.n.dist <= x.need * 2, say: (x) => `braking zone for ${x.n.f.name} coming up`, sample: "braking zone for T4 tight corner coming up" },
-    { when: "further away than that", test: always, say: (x) => `${x.n.f.name} is still some way off`, sample: "T4 tight corner is still some way off" }] },
-  "car.road_position": { about: "where the car sits across the road (−1 is the left edge, +1 the right)", value: (x) => x.c.lat, cases: ROAD },
+    { when: "already at or under the speed it needs", test: (x, v) => v <= x.n.limit, say: (x) => `already at the speed ${x.n.f.name} needs (${kmh(x.n.limit)}, ${metres(x.n.dist)} away)`, sample: "already at the speed T4 tight corner needs (68 km/h, 41 m away)" },
+    { when: "within 115% of the full-braking distance", test: (x) => x.n.dist <= x.need * 1.15, say: (x) => `at the braking point for ${x.n.f.name}: steady brakes now, attack commits past the limit (${metres(x.n.dist)} to go, ${metres(x.need)} needed to slow to ${kmh(x.n.limit)})`, sample: "at the braking point for T4 tight corner: steady brakes now, attack commits past the limit (33 m to go, 31 m needed to slow to 68 km/h)" },
+    { when: "within twice the full-braking distance", test: (x) => x.n.dist <= x.need * 2, say: (x) => `braking zone for ${x.n.f.name} coming up (${metres(x.n.dist)} to go, ${metres(x.need)} needed to slow to ${kmh(x.n.limit)})`, sample: "braking zone for T4 tight corner coming up (55 m to go, 31 m needed to slow to 68 km/h)" },
+    { when: "further away than that", test: always, say: (x) => `${x.n.f.name} is still some way off (${metres(x.n.dist)} to go, ${metres(x.need)} needed to slow to ${kmh(x.n.limit)})`, sample: "T4 tight corner is still some way off (120 m to go, 31 m needed to slow to 68 km/h)" }] },
+  "car.road_position": { about: "where the car sits across the road (−1 is the left edge, +1 the right)", value: (x) => x.c.lat, cases: ROAD.map((k) => ({ ...k, say: (x, v) => `${k.say(x, v)} (the road is ${x.width} m wide)`, sample: `${k.sample} (the road is 13.5 m wide)` })) },
   "car.current": { about: "the last answers, and the corner they apply to", cases: [{ when: "always", test: always, say: (x) => `${x.c.dec.pace} pace, taking the ${x.c.dec.line} line for ${x.corner?.name ?? "the next corner"}`, sample: "steady pace, taking the inside line for T4 tight corner" }] },
   "car.grip": { about: "speed against the grip limit of the car's own path", cases: [
     { when: "above 95% of the limit", test: (x) => x.c.v > x.gripLimit * 0.95, say: "at the limit, tyres squealing" },
@@ -47,25 +52,25 @@ export const WORLD = {
   "track_ahead.next": { about: "the nearest feature ahead (a feature counts as ahead until the car is past its midpoint)", cases: [
     { when: "it is a corner", test: (x) => !!x.f.dir, say: (x) => `${x.f.name}, turning ${x.f.dir}`, sample: "T4 tight corner, turning right / T2-T3 chicane, turning left then right" },
     { when: "it is a straight", test: always, say: (x) => x.f.name, sample: "back straight" }] },
-  "track_ahead.distance": { about: "distance to it, m (a car is 6 m)", value: (x) => x.f.dist, cases: ladder("m", [[15, "right now"], [40, "close"], [80, "medium"], [1e9, "far"]]) },
-  "track_ahead.entry": { about: "the braking it needs, from its speed limit as a fraction of top speed", value: (x) => x.f.limit / x.vtop, cases: ladder("of top speed", [[0.4, "brake very hard, down to walking pace"], [0.534, "brake hard"], [0.734, "brake, then carry good speed"], [0.999, "just a lift, barely any braking"], [1e9, "flat out"]]) },
+  "track_ahead.distance": { about: "distance to it, m (a car is 6 m)", value: (x) => x.f.dist, cases: ladder("m", [[15, "right now", 8], [40, "close", 27], [80, "medium", 62], [1e9, "far", 140]], (x, v) => metres(v)) },
+  "track_ahead.entry": { about: "the braking it needs, from its speed limit as a fraction of top speed", value: (x) => x.f.limit / x.vtop, cases: ladder("of top speed", [[0.4, "brake very hard, down to walking pace", 0.35], [0.534, "brake hard", 0.5], [0.734, "brake, then carry good speed", 0.65], [0.999, "just a lift, barely any braking", 0.9], [1e9, "flat out", 1]], (x, v) => `the limit is ${kmh(v * x.vtop)}`) },
   "track_ahead.after_that": { about: "the feature after it", cases: [{ when: "always", test: always, say: (x) => x.f.then, sample: "short straight" }] },
   "track_ahead.note": { about: "a fixed reminder of how corners are graded", cases: [{ when: "always", test: always, say: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" }] },
   "rivals.*": { about: "the nearest car ahead and the nearest behind, within 35 m", cases: [
     { when: "nobody within 35 m", test: (x) => !x.o, say: "nobody nearby" },
     { when: "someone is", test: always, say: "{ name, gap, road_position, pace (ahead only), status }" }] },
-  "rivals.*.gap": { about: "gap to the rival, m", value: (x) => x.g, cases: ladder("m", [[7.5, "right on the bumper"], [17.5, "close"], [35, "a few car lengths"]]) },
-  "rivals.*.road_position": { about: "where the rival sits across the road (−1 left edge, +1 right), and which side of you", value: (x) => x.o.lat, cases: ROAD.map((k) => ({ ...k, say: (x, v) => `${k.say}, ${speak("rivals.*.side", x, `rivals.${x.which}.side`)}`, sample: `${k.say}, to your left` })) },
+  "rivals.*.gap": { about: "gap to the rival, m", value: (x) => x.g, cases: ladder("m", [[7.5, "right on the bumper", 4], [17.5, "close", 12], [35, "a few car lengths", 26]], (x, v) => metres(v)) },
+  "rivals.*.road_position": { about: "where the rival sits across the road (−1 left edge, +1 right), and which side of you", value: (x) => x.o.lat, cases: ROAD.map((k) => ({ ...k, say: (x, v) => `${k.say(x, v)}, ${speak("rivals.*.side", x, `rivals.${x.which}.side`)}`, sample: `${k.sample}, 2.4 m to your left` })) },
   "rivals.*.side": { about: "the rival's lateral offset from you", value: (x) => x.o.lat - x.c.lat, cases: [
-    { when: "within 0.3 of your line", test: (x, v) => Math.abs(v) < 0.3, say: "directly in line with you" },
-    { when: "to the left", test: (x, v) => v < 0, say: "to your left" },
-    { when: "to the right", test: always, say: "to your right" }] },
+    { when: "within 0.3 of your line", test: (x, v) => Math.abs(v) < 0.3, say: (x, v) => `directly in line with you (${(Math.abs(v) * x.latM).toFixed(1)} m ${v < 0 ? "left" : "right"})`, sample: "directly in line with you (0.6 m left)" },
+    { when: "to the left", test: (x, v) => v < 0, say: (x, v) => `${(-v * x.latM).toFixed(1)} m to your left`, sample: "2.4 m to your left" },
+    { when: "to the right", test: always, say: (x, v) => `${(v * x.latM).toFixed(1)} m to your right`, sample: "2.4 m to your right" }] },
   "rivals.ahead.pace": { about: "how the car ahead is going relative to you", cases: [
     { when: "spinning", test: (x) => x.o.spin > 0, say: "spinning, a place for the taking" },
     { when: "the blocking rule is capping your speed to theirs", test: (x) => x.c.heldBy === x.o, say: "holding you up: you are faster and stuck behind them" },
-    { when: "more than 5% faster than you", test: (x) => x.o.v > x.c.v * 1.05, say: "pulling away" },
-    { when: "more than 5% slower than you", test: (x) => x.o.v < x.c.v * 0.95, say: "slower than you" },
-    { when: "otherwise", test: always, say: "about the same pace" }] },
+    { when: "more than 5% faster than you", test: (x) => x.o.v > x.c.v * 1.05, say: (x) => `pulling away (${kmh(x.o.v)} to your ${kmh(x.c.v)})`, sample: "pulling away (128 km/h to your 112 km/h)" },
+    { when: "more than 5% slower than you", test: (x) => x.o.v < x.c.v * 0.95, say: (x) => `slower than you (${kmh(x.o.v)} to your ${kmh(x.c.v)})`, sample: "slower than you (96 km/h to your 112 km/h)" },
+    { when: "otherwise", test: always, say: (x) => `about the same pace (${kmh(x.o.v)} to your ${kmh(x.c.v)})`, sample: "about the same pace (110 km/h to your 112 km/h)" }] },
   "rivals.*.status": { about: "whether the rival is under control", cases: [
     { when: "spinning", test: (x) => x.o.spin > 0, say: "spinning" },
     { when: "otherwise", test: always, say: "racing" }] },
