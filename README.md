@@ -2,8 +2,7 @@
 
 A small top-down racing game where **code drives and Jev judges**. A 60 fps physics loop handles steering, grip,
 braking, and collisions. Every ~0.8 s each driver's situation is described in words and sent to
-[TypeSafe Jev](https://docs.typesafe.ai/) with five questions: line and pace (Choice), overtake, boost, and
-shortcut (Noul). Drivers differ only by a `traits` string in the state, which is enough to produce distinct
+[TypeSafe Jev](https://docs.typesafe.ai/) with four questions: line and pace (Choice), overtake and boost (Noul). Drivers differ only by a `traits` string in the state, which is enough to produce distinct
 personalities.
 
 ```sh
@@ -13,4 +12,6 @@ npm start              # http://localhost:4343
 
 No dependencies; Node 20+. `server.mjs` serves `public/` and proxies `/api/evaluate` so the key stays server-side.
 `public/race.js` is the whole game: track spline, physics, the per-driver state builder, the Jev questions, and rendering.
+Tracks: the original, a by-eye Circuit of the Americas, or **New track**, where code drafts five random F1-style circuits,
+describes each in words, and Jev picks the one that should make the best race for these drivers.
 Click a driver card to see its last request and response.
