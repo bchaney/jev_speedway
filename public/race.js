@@ -66,7 +66,8 @@ function classifyTrack() {
     const first = t + 1; t += g.length;
     const s0 = g[0].s0 % L, len = g[g.length - 1].s1 - g[0].s0, limit = Math.min(...g.map((r) => grade(r).limit));
     const name = g.length === 1 ? `T${first} ${grade(g[0]).grade}` : `T${first}-T${t} ${limit < 80 ? "tight " : limit >= 110 ? "fast " : ""}${g.length === 2 ? "chicane" : "esses"}`;
-    feats.push({ kind: g.length === 1 ? "corner" : g.length === 2 ? "chicane" : "esses", name, s0, s1: s0 + len, mid: s0 + len / 2, len, limit, turns: g.length });
+    const dir = g.map((r) => (r.sign > 0 ? "right" : "left")).join(" then "); // positive curvature is a right-hander on screen
+    feats.push({ kind: g.length === 1 ? "corner" : g.length === 2 ? "chicane" : "esses", name, s0, s1: s0 + len, mid: s0 + len / 2, len, limit, turns: g.length, dir });
   }
   const straights = []; // whatever lies between corners, if it is long enough to be worth a name
   for (let i = 0; i < feats.length; i++) {
@@ -156,7 +157,7 @@ async function designTrack() { // code drafts, Jev judges: several random circui
   const d = state.layouts[pick];
   return `Layout ${pick}: ${d.length}, ${d.corners}, tightest ${d.tightest_corner}; lap: ${d.lap}. ${note}`;
 }
-const WIDTH = 46;
+const WIDTH = 54;
 function at(s) { // spline points are unevenly spaced, so look the index up by accumulated arc length
   s = ((s % L) + L) % L; let lo = 0, hi = pts.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid].s <= s) lo = mid; else hi = mid - 1; }
@@ -164,16 +165,25 @@ function at(s) { // spline points are unevenly spaced, so look the index up by a
 }
 function pos(s, lat) { const p = at(s); return { x: p.x + Math.cos(p.h + Math.PI / 2) * lat * WIDTH * 0.42, y: p.y + Math.sin(p.h + Math.PI / 2) * lat * WIDTH * 0.42, h: p.h }; }
 // features (by track distance)
-const V_TOP = 150, GRIP = 120, ACCEL = 65, BRAKE = 160; // GRIP sized so the hairpin limits to ~75 px/s and the sweepers to ~100-150
+const V_TOP = 150, GRIP = 120, ACCEL = 65, BRAKE = 160, DRAG = 45, CRAWL = 40, DRAFT_RANGE = 90, STEER_RATE = 2; // CRAWL: slower than any corner needs, and as slow as braking or coasting will take a car // GRIP sized so the hairpin limits to ~75 px/s and the sweepers to ~100-150
 // Lateral offset changes the real path: the inside of a corner is shorter but tighter, the outside longer but more forgiving.
 // Positive kappa is a right-hand turn on screen; positive lat is the right-hand side of the road.
 function pathAt(s, lat) { const k = at(s).kappa; const denom = clamp(1 - k * lat * WIDTH * 0.42, 0.6, 1.4); return { kappa: k / denom, progress: 1 / denom }; }
+function nextCorner(sm) { // the nearest corner ahead (or the one the car is in), which is what a line is chosen for
+  let best = null, bd = Infinity;
+  for (const f of FEATURES) { if (!isCorner(f)) continue; const into = ((sm - f.s0) % L + L) % L, d = into < f.len ? 0 : ((f.s0 - sm) % L + L) % L; if (d < bd) { bd = d; best = f; } }
+  return best;
+}
+function nextTurn(sm) { const f = nextCorner(sm); return f && f.dir.startsWith("left") ? -1 : 1; } // +1 right-hander, -1 left-hander
+function speedNeed(c, sm) { // what sets the speed right now: the corner the car is still in, otherwise the next feature
+  const here = featureAt(sm), f = here && isCorner(here) ? here : nextFeature(sm);
+  return { f, here: f === here, dist: f === here ? 0 : f.dist, limit: pathLimit(f, c.lat) };
+}
+function pathLimit(f, lat) { // slowest point of a feature along the car's actual path, which the inside of the road makes tighter
+  let m = Infinity; for (let i = 0; i <= 8; i++) m = Math.min(m, cornerLimit(f.s0 + f.len * i / 8, lat)); return Math.min(V_TOP, m);
+}
 function cornerLimit(s, lat = 0) { return Math.sqrt(GRIP / Math.max(Math.abs(pathAt(s, lat).kappa), 1e-4)); } // physical grip limit, uncapped
 function vmax(s, lat = 0) { return Math.min(V_TOP, cornerLimit(s, lat)); }
-function turnAhead(s, look) { // sign of the next significant corner (+1 right, -1 left, 0 none in range)
-  let best = 0; for (let d = 0; d <= look; d += 10) { const k = at(s + d).kappa; if (Math.abs(k) > Math.abs(best)) best = k; }
-  return Math.abs(best) > 0.004 ? Math.sign(best) : 0;
-}
 buildTrack(DEFAULT_CP);
 function nextFeature(s) { // nearest upcoming feature; a feature still counts as upcoming until the car is past its midpoint
   let bestD = Infinity, best = -1;
@@ -207,9 +217,10 @@ function gridOrder() { // drivers with a grid number take that slot; the rest fi
 function resetCars() {
   cars.length = 0; const grid = gridOrder();
   DRIVERS.forEach((d, i) => cars.push({
-    ...d, i, s: -30 - grid.indexOf(d) * 28, lat: grid.indexOf(d) % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, turn: 1, done: false, finishT: null,
-    dec: { line: "middle", pace: "steady", overtake: false, boost: false, conf: {}, probs: {} }, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null, contact: null,
+    ...d, i, s: -30 - grid.indexOf(d) * 28, lat: grid.indexOf(d) % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, tow: 0, towing: null, slingT: 0, done: false, finishT: null,
+    dec: { line: "middle", pace: "steady", overtake: false, boost: false, conf: {}, probs: {} }, steer: 0, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null, contact: null,
   }));
+  buildCards();
 }
 
 // ---------- physics (code owns the car) ----------
@@ -226,25 +237,44 @@ function step(dt) {
   race.t += dt;
   const order = ranking();
   for (const c of cars) {
+    c.braking = false;
     if (c.done) { c.v = lerp(c.v, 60, dt); advance(c, c.v * dt); continue; }
     if (c.spin > 0) { c.spin -= dt; c.v = lerp(c.v, 0, dt * 2); advance(c, c.v * dt); continue; }
     const sm = ((c.s % L) + L) % L;
     const look = 40 + c.v * 0.55;
-    c.turn = turnAhead(sm, look + 60) || c.turn;
-    // target lane from decision, relative to the upcoming corner; hesitation if low confidence
-    const laneT = { inside: 0.85 * c.turn, middle: 0, outside: -0.85 * c.turn }[c.dec.line] ?? 0;
-    c.lat = lerp(c.lat, laneT, dt * 3);
-    // pace: how close to the limit into the next corner
-    const paceF = { attack: 1.12, steady: 1.0, cautious: 0.86 }[c.dec.pace] ?? 1;
-    let target = V_TOP;
-    for (let d = 0; d < look; d += 5) { const v = Math.min(V_TOP, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
+    // drafting: tucked in close behind a car on the same part of the road at speed, the air is easier, so the ceiling rises and a charge builds.
+    // Pulling out of the tow (or Jev calling the pass) releases it as a slingshot: a short burst and a move to the other side of the car ahead.
+    let tow = null, towF = 0;
+    for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < DRAFT_RANGE && Math.abs(o.lat - c.lat) < 0.5 && c.v > 80) { const f = 1 - gap / DRAFT_RANGE; if (f > towF) { towF = f; tow = o; } } }
+    const armed = c.tow >= 0.5;
+    if (tow) c.tow = Math.min(1, c.tow + dt / 1.5); else c.tow = Math.max(0, c.tow - dt);
+    if (armed && c.slingT <= 0 && ((c.towing && !tow) || (tow && c.dec.overtake))) { c.slingT = 0.9 * c.tow; c.slingFrom = tow ?? c.towing; c.tow = 0; log(`${c.name} slingshots out of ${c.slingFrom.name}'s tow`); }
+    c.towing = tow;
+    if (c.slingT > 0) c.slingT -= dt;
+    // Jev picks the line and the pace; the code does the driving. Line: inside, middle or outside of the next corner, steered to at
+    // up to STEER_RATE. Pace: how close to the grip limit the code drives, braking for corners in time (attack brakes late and
+    // carries speed past the limit, which is faster if it sticks and a spin if it does not).
+    const turn = nextTurn(sm); // +1 the next corner is a right-hander, -1 a left-hander
+    // an overtake call pulls the car out to the open side of the rival directly ahead; a slingshot does the same with a burst
+    let blocker = null, bg = Infinity; for (const o of cars) if (o !== c && !o.done) { let gap = ((o.s - c.s) % L + L) % L; if (gap > L / 2) gap -= L; if (gap > -CAR_LEN && gap < 80 && gap < bg) { blocker = o; bg = gap; } } // ahead or alongside: the move is held until the car is clear past
+    const passing = (c.slingT > 0 && c.slingFrom && !c.slingFrom.done && ((c.slingFrom.s - c.s) % L + L) % L < 60) ? c.slingFrom : (c.dec.overtake && blocker);
+    const latT = passing ? -Math.sign(passing.lat || -c.lat || 1) * 0.85 : ({ inside: 0.85 * turn, middle: 0, outside: -0.85 * turn }[c.dec.line] ?? 0);
+    c.steer = clamp((latT - c.lat) * 3, -1, 1); // wheel angle the code applies to get there, shown on the instruments
+    c.lat = clamp(c.lat + c.steer * STEER_RATE * dt, -1, 1);
+    const paceF = { attack: 1.15, steady: 0.95, cautious: 0.84 }[c.dec.pace] ?? 0.95; // steady sits just inside the grip tolerance, attack well past it
+    const mult = c.slingT > 0 ? 1.18 : 1 + 0.1 * towF; // the tow and the slingshot raise the ceiling
+    let target = V_TOP * mult;
+    for (let d = 0; d < look; d += 5) { const v = Math.min(V_TOP * mult, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
+    target = Math.max(CRAWL, target);
     if (c.dec.overtake) target *= 1.06;
     if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.dec.boost = false; c.boostT = 1.4; log(`${c.name} hits the boost`); } // consume the decision so a new lap needs a fresh call
     if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; } // the driver's own boost ignores the corner cap: boosting into a corner is the risk Jev is asked about
-    // blocking: car directly ahead in same lane caps speed
-    for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 26 && Math.abs(o.lat - c.lat) < 0.7) target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); }
+    // blocking: a car directly ahead on the same part of the road caps speed
+    c.heldBy = null; for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 28 && Math.abs(o.lat - c.lat) < 0.5 && o.v * 1.0 < target) { c.heldBy = o; target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); } }
     // accelerate / brake
-    if (c.v < target) c.v = Math.min(target, c.v + ACCEL * dt * (c.boostT > 0 ? 2 : 1)); else c.v = Math.max(target, c.v - BRAKE * dt);
+    const accel = ACCEL * (c.boostT > 0 ? 2 : c.slingT > 0 ? 1.6 : 1 + 0.5 * towF);
+    c.braking = c.v > target + 1; c.throttle = c.braking ? 0 : 1; // holding the cap still counts as on the throttle
+    if (c.v < target) c.v = Math.min(target, c.v + accel * dt); else c.v = Math.max(target, c.v - BRAKE * dt);
     // grip check: over the limit of the actual path is a risk that grows with the overshoot, not a certainty; straights never spin
     const over = c.v / (cornerLimit(sm, c.lat) * 1.05) - 1; // 5% tolerance so a steady car at the limit is safe; attack (12% over) is not
     if (over > 0 && Math.random() < over * dt * 8) { c.spin = 1.2; c.v *= 0.35; { const f = featureAt(sm) ?? nextFeature(sm); log(`${c.name} spins out ${f.kind === "straight" ? "on" : "in"} ${f.name}!`); } }
@@ -292,24 +322,35 @@ function collide() {
 function ranking() { return [...cars].sort((a, b) => (a.finishT ?? Infinity) - (b.finishT ?? Infinity) || b.s - a.s); } // s already accumulates across laps
 
 // ---------- Jev: the driver's judgment ----------
+const wheelWords = (s) => (Math.abs(s) < 0.1 ? "centred" : `${Math.round(s * 90)}° ${s < 0 ? "left" : "right"}`);
+
+function situation(c, sm) { // where the car stands against what the road needs, so the pace call is informed
+  const n = speedNeed(c, sm), f = n.f, limit = n.limit;
+  if (n.here) return c.v > limit * 1.02 ? `in ${f.name} over its limit: the tyres will not hold this for long` : c.v > limit * 0.9 ? `in ${f.name} right at its limit` : `in ${f.name} with speed in hand`;
+  if (limit >= V_TOP) return "nothing ahead needs braking";
+  const need = Math.max(0, (c.v * c.v - limit * limit) / (2 * BRAKE)); // road needed to slow to the feature's speed at full braking
+  return need === 0 ? `already at the speed ${f.name} needs` : n.dist <= need * 1.15 ? `at the braking point for ${f.name}: steady brakes now, attack commits past the limit` : n.dist <= need * 2 ? `braking zone for ${f.name} coming up` : `${f.name} is still some way off`;
+}
 function buildState(c, order) {
   const sm = ((c.s % L) + L) % L, p = order.indexOf(c) + 1, f = nextFeature(sm);
   const gapTo = (o) => o ? (((o.s - c.s) % L + L) % L) : null;
   let ahead = null, behind = null;
   for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < 140 && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < 140 && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
-  const laneName = (lat) => { const r = lat * c.turn; return r > 0.3 ? "inside" : r < -0.3 ? "outside" : "middle"; }; // relative to the next corner
-  const desc = (o, g) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), lane: laneName(o.lat), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
+  const roadPos = (lat) => bucket(lat, [[-0.7, "at the left edge"], [-0.25, "left of centre"], [0.25, "centre of the road"], [0.7, "right of centre"], [1e9, "at the right edge"]]);
+  const sideOf = (o) => { const d = o.lat - c.lat; return Math.abs(d) < 0.3 ? "directly in line with you" : d < 0 ? "to your left" : "to your right"; };
+  const pace = (o) => (o.spin > 0 ? "spinning, a place for the taking" : c.heldBy === o ? "holding you up: you are faster and stuck behind them" : o.v > c.v * 1.05 ? "pulling away" : o.v < c.v * 0.95 ? "slower than you" : "about the same pace");
+  const desc = (o, g, isAhead) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), road_position: `${roadPos(o.lat)}, ${sideOf(o)}`, ...(isAhead ? { pace: pace(o) } : {}), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
   return {
-    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
-    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable", contact: c.contact && race.t - c.contact.t < 2 ? `just ${c.contact.kind} ${c.contact.with}` : "none lately" },
-    track_ahead: { next: f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
-    rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0) },
+    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}${p > 1 ? ", and places are only gained by passing" : ""}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
+    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), situation: situation(c, sm), road_position: roadPos(c.lat), current: `${c.dec.pace} pace, taking the ${c.dec.line} line for ${nextCorner(sm)?.name ?? "the next corner"}`, grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable", contact: c.contact && race.t - c.contact.t < 2 ? `just ${c.contact.kind} ${c.contact.with}` : "none lately", tow: c.slingT > 0 ? "slingshotting right now" : c.towing ? `in ${c.towing.name}'s tow, ${c.tow >= 0.5 ? "slingshot ready: calling the pass now releases it" : "building a run"}` : "clean air" },
+    track_ahead: { next: f.dir ? `${f.name}, turning ${f.dir}` : f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
+    rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0, true), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0, false) },
   };
 }
 const QUESTIONS = {
-  line: { type: "choice", instructions: "Which lane should `driver` take through `track_ahead.next`, given `rivals` and the driver's `driver.traits`?", criteria: { inside: "Tight line, shortest distance, less forgiving if too fast", middle: "Neutral line", outside: "Wide line, more forgiving at speed, longer distance" } },
-  pace: { type: "choice", instructions: "How hard should `driver` push into `track_ahead.next`?", criteria: { attack: "Brake as late as possible, carry maximum speed, accept a real risk of spinning", steady: "Brake normally and stay in control", cautious: "Brake early and protect the position, giving up some time" } },
-  overtake: { type: "noul", instructions: "Should `driver` attempt to pass `rivals.ahead` before `track_ahead.next`?", criteria: { true: "There is a rival close ahead and passing now fits the driver's traits and the situation; contact is possible, and it costs speed and can spin either car", false: "No rival close ahead, or passing now is unwise for this driver" } },
+  line: { type: "choice", instructions: "Which line should `driver` take through the next corner (see `track_ahead`), given `rivals`, `car.road_position` and the driver's `driver.traits`? Two cars in the same place make contact.", criteria: { inside: "Tight line, shortest distance, less forgiving if too fast", middle: "Neutral line", outside: "Wide line, more forgiving at speed, longer distance" } },
+  pace: { type: "choice", instructions: "How hard should `driver` push into `track_ahead.next`, given `car.situation`, `rivals` and `driver.traits`? The code brakes for corners at the chosen pace.", criteria: { attack: "Brake as late as possible and carry speed past the grip limit: faster if it sticks, a real risk of spinning", steady: "Drive at the limit, brake normally and stay in control", cautious: "Brake early and protect the position, giving up some time" } },
+  overtake: { type: "noul", instructions: "Should `driver` attempt to pass `rivals.ahead` before `track_ahead.next`? Going for it pulls the car out to the open side of the rival and pushes harder; staying put means following in their wheel tracks.", criteria: { true: "A rival is within reach ahead and a pass is on: the driver is being held up or is quicker, the road ahead gives room, and the risk suits the driver's traits. A ready slingshot from `car.tow` makes it far more likely to stick", false: "No rival within reach, the rival is genuinely quicker, or this driver would rather wait for a better moment. Following costs time when held up; contact costs speed and can spin either car" } },
   boost: { type: "noul", instructions: "Should `driver` use the boost right now, considering `driver.boost`, `track_ahead` and `rivals`?", criteria: { true: "Boost is available and this moment (a straight or a pass) is a good use of it", false: "Boost is unavailable, or a better moment is coming" } },
 };
 async function think(c, order) {
@@ -325,9 +366,9 @@ async function think(c, order) {
     if (a) {
       race.reqs++; race.tokens += r.response.usage?.input_tokens ?? 0; race.cost += r.response.usage?.cost ?? (r.response.usage?.input_tokens ?? 0) * PRICE_PER_MTOK / 1e6; race.latency.push(r.latencyMs);
       const d = c.dec;
-      if (a.line.confidence >= 0.35) d.line = a.line.choice; // low confidence: hesitate, keep the lane
+      if (a.line.confidence >= 0.35) d.line = a.line.choice; // low confidence: hesitate, keep the line
       d.pace = a.pace.confidence >= 0.35 ? a.pace.choice : "steady";
-      d.overtake = a.overtake.noul > 0.6; d.boost = a.boost.noul > 0.7;
+      d.overtake = a.overtake.noul > 0.5; d.boost = a.boost.noul > 0.7;
       d.conf = { line: a.line.confidence, pace: a.pace.confidence }; d.probs = { line: a.line.probabilities, pace: a.pace.probabilities, overtake: a.overtake.noul, boost: a.boost.noul };
     } else log(`${c.name}: request failed (${r.status}) ${JSON.stringify(r.response).slice(0, 120)}`);
   } catch (e) { log(`${c.name}: ${e.message}`); }
@@ -344,7 +385,6 @@ function draw() {
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   ctx.strokeStyle = "#1c2233"; ctx.lineWidth = WIDTH + 10; tracePath(); ctx.stroke();
   ctx.strokeStyle = "#2a3247"; ctx.lineWidth = WIDTH; tracePath(); ctx.stroke();
-  ctx.setLineDash([10, 14]); ctx.strokeStyle = "#3d4763"; ctx.lineWidth = 2; tracePath(); ctx.stroke(); ctx.setLineDash([]);
   for (const f of FEATURES) { // name every feature, pushed off the road: to the outside of a corner, away from the middle for a straight
     const p = at(f.mid), nx = Math.cos(p.h + Math.PI / 2), ny = Math.sin(p.h + Math.PI / 2);
     const out = Math.sign(nx * (p.x - 550) + ny * (p.y - 370)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : out, off = WIDTH / 2 + 14;
@@ -358,6 +398,7 @@ function draw() {
     const p = pos(c.s, c.lat);
     ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.h); if (c.spin > 0) ctx.rotate(c.spin * 9);
     if (c.boostT > 0) { ctx.fillStyle = "rgba(250,204,21,.8)"; ctx.fillRect(-22, -4, 10, 8); }
+    if (c.slingT > 0) { ctx.fillStyle = "rgba(56,189,248,.8)"; ctx.fillRect(-34, -3, 22, 6); } else if (c.towing) { ctx.fillStyle = `rgba(56,189,248,${(0.25 + 0.5 * c.tow).toFixed(2)})`; ctx.fillRect(-20, -2, 8, 4); }
     if (c.contact && race.t - c.contact.t < 0.3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.globalAlpha = 1 - (race.t - c.contact.t) / 0.3; ctx.strokeRect(-14, -9, 28, 18); ctx.globalAlpha = 1; } // flash on contact
     ctx.fillStyle = c.color; ctx.fillRect(-11, -6, 22, 12); ctx.fillStyle = "#111"; ctx.fillRect(-3, -5, 8, 10);
     ctx.restore();
@@ -372,27 +413,49 @@ function label(t, x, y, col, align = "center") { // kept inside the canvas
 }
 
 let selected = null;
-function renderSide() {
+function renderSide() { // standings and stats; the driver cards are built once and updated in place, so nothing flickers
   const order = ranking();
   $("#standings").innerHTML = order.map((c, i) => `<div><span style="color:${c.color}">P${i + 1} ${c.name}</span><span>${c.done ? `finished ${c.finishT.toFixed(1)}s` : `lap ${Math.min(c.lap + 1, race.laps)} · ${Math.round(c.v)}`}</span></div>`).join("");
   const avgLat = race.latency.length ? Math.round(race.latency.reduce((a, b) => a + b, 0) / race.latency.length) : 0;
   $("#stats").textContent = `${race.reqs} Jev requests · ${race.tokens.toLocaleString()} input tokens · $${race.cost.toFixed(5)} · avg ${avgLat} ms`;
   $("#racestate").textContent = race.running ? `${race.t.toFixed(1)}s` : "";
-  $("#drivers").innerHTML = cars.map((c) => {
-    const d = c.dec, pr = d.probs, bar = (v) => `<span class="bar"><i style="width:${(v * 100).toFixed(0)}%"></i></span>`;
-    const choiceRows = (k, obj) => obj ? Object.entries(obj).sort((a, b) => b[1] - a[1]).map(([o, p]) => `<div class="dec ${o === d[k] ? "" : "dim"}"><span class="k">${k === "line" ? "line" : "pace"}: ${o}</span>${bar(p)}<span class="v">${p.toFixed(2)}</span></div>`).join("") : "";
-    const noulRow = (k, v, on) => v == null ? "" : `<div class="dec ${on ? "" : "dim"}"><span class="k">${k}${on ? " ✓" : ""}</span>${bar(v)}<span class="v">${v.toFixed(2)}</span></div>`;
-    return `<div class="card" data-i="${c.i}" style="--c:${c.color};cursor:pointer;${selected === c ? "outline:1px solid #fff" : ""}"><h3>${c.name} <span class="stats">${c.thinking ? "thinking…" : ""} conf line ${(d.conf.line ?? 0).toFixed(2)} · pace ${(d.conf.pace ?? 0).toFixed(2)}</span></h3><div class="traits">${c.traits}</div>
-      ${choiceRows("line", pr.line)}${choiceRows("pace", pr.pace)}${noulRow("overtake", pr.overtake, d.overtake)}${noulRow("boost", pr.boost, d.boost)}</div>`;
-  }).join("");
-  document.querySelectorAll("#drivers .card").forEach((el) => el.addEventListener("click", () => { selected = cars[Number(el.dataset.i)]; $("#raw").textContent = JSON.stringify({ request: selected.lastReq, response: selected.lastRes }, null, 2); renderSide(); }));
+  if (document.querySelectorAll("#drivers .card").length !== cars.length) buildCards();
+  updateCards();
+}
+const PACE_STEPS = ["attack", "steady", "cautious"], LINE_STEPS = ["inside", "middle", "outside"];
+function buildCards() {
+  const row = (id, label) => `<div class="dec dim" id="${id}"><span class="k">${label}</span><span class="bar"><i style="width:0"></i></span><span class="v">–</span></div>`;
+  $("#drivers").innerHTML = cars.map((c) => `<div class="card" data-i="${c.i}" style="--c:${c.color};cursor:pointer"><h3>${c.name} <span class="stats" id="hdr${c.i}"></span></h3><div class="traits">${c.traits}</div>
+      <div class="inst"><span class="gauge" title="throttle"><i id="thr${c.i}"></i></span><span class="lamp" id="brk${c.i}">BRAKE</span><svg class="wheel" viewBox="0 0 40 40"><g id="whl${c.i}"><circle cx="20" cy="20" r="16" fill="none" stroke="currentColor" stroke-width="4"/><path d="M20 20 L20 34 M20 20 L7 13 M20 20 L33 13" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="20" cy="4" r="2.5" fill="#f97316" stroke="none"/></g></svg><span class="deg" id="deg${c.i}"></span></div>
+      ${PACE_STEPS.map((s, i) => row(`p${c.i}_${i}`, `pace: ${s}`)).join("")}${LINE_STEPS.map((s, i) => row(`w${c.i}_${i}`, `line: ${s}`)).join("")}${row(`o${c.i}`, "overtake")}${row(`b${c.i}`, "boost")}</div>`).join("");
+  document.querySelectorAll("#drivers .card").forEach((el) => el.addEventListener("click", () => { selected = cars[Number(el.dataset.i)]; $("#raw").textContent = JSON.stringify({ request: selected.lastReq, response: selected.lastRes }, null, 2); updateCards(); }));
+}
+function updateCards() {
+  const setRow = (id, p, bright, label) => { const el = $(`#${id}`); if (!el || p == null) return; el.classList.toggle("dim", !bright); el.querySelector(".bar i").style.width = `${(p * 100).toFixed(0)}%`; el.querySelector(".v").textContent = p.toFixed(2); if (label) el.querySelector(".k").textContent = label; };
+  for (const c of cars) {
+    const d = c.dec, pr = d.probs, el = document.querySelector(`#drivers .card[data-i="${c.i}"]`), hdr = $(`#hdr${c.i}`); if (!el || !hdr) continue;
+    el.style.outline = selected === c ? "1px solid #fff" : "";
+    hdr.textContent = `${c.thinking ? "thinking… " : ""}conf pace ${(d.conf.pace ?? 0).toFixed(2)} · line ${(d.conf.line ?? 0).toFixed(2)}`;
+    const scale = (obj, steps, prefix, chosen) => { if (!obj) return; steps.forEach((s, i) => setRow(`${prefix}${c.i}_${i}`, obj[s] ?? 0, s === chosen)); };
+    scale(pr.pace, PACE_STEPS, "p", d.pace); scale(pr.line, LINE_STEPS, "w", d.line);
+    setRow(`o${c.i}`, pr.overtake, d.overtake, `overtake${d.overtake ? " ✓" : ""}`); setRow(`b${c.i}`, pr.boost, d.boost, `boost${d.boost ? " ✓" : ""}`);
+  }
 }
 const logs = [];
 function log(m) { logs.unshift(`<div><b>${race.t.toFixed(1)}s</b> ${m}</div>`); if (logs.length > 60) logs.pop(); $("#log").innerHTML = logs.join(""); }
 
 // ---------- loop & init ----------
 let last = 0, paused = false;
-function frame(t) { const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t; if (race.running && !paused) step(dt); draw(); syncPlay(); requestAnimationFrame(frame); }
+function frame(t) { const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t; if (race.running && !paused) step(dt); draw(); syncPlay(); instruments(); requestAnimationFrame(frame); }
+function instruments() { // throttle gauge, brake lamp and wheel angle, live
+  for (const c of cars) {
+    const thr = $(`#thr${c.i}`); if (!thr) continue;
+    thr.style.width = `${Math.round((c.throttle ?? 0) * 100)}%`; // what the code is doing: on the throttle, or on the brakes
+    $(`#brk${c.i}`).classList.toggle("on", !!c.braking);
+    $(`#whl${c.i}`).setAttribute("transform", `rotate(${(c.steer * 90).toFixed(1)} 20 20)`);
+    $(`#deg${c.i}`).textContent = `${wheelWords(c.steer)} · ${c.dec.pace}`;
+  }
+}
 function syncPlay() { // one button: play starts or resumes, pause pauses; it reads the race so ending, resetting or changing track all update it
   const playing = race.running && !paused, title = playing ? "Pause" : race.running ? "Resume" : "Start race";
   const b = $("#play"); if (b.title !== title) { b.textContent = playing ? "❚❚" : "▶"; b.title = title; b.setAttribute("aria-label", title); }

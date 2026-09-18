@@ -20,16 +20,21 @@ canvas { width:100%; background:#0f1320; border:1px solid var(--line); border-ra
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; border-left:4px solid var(--c, #fff); }
 .card h3 { margin:0 0 2px; font-size:13px; display:flex; justify-content:space-between; }
 .card .traits { color:var(--muted); font-size:11px; margin-bottom:6px; }
-.dec { display:grid; grid-template-columns: 82px 1fr 40px; gap:6px; align-items:center; font-size:11px; margin:2px 0; }
+.dec { display:grid; grid-template-columns: 100px 1fr 40px; gap:6px; align-items:center; font-size:11px; margin:2px 0; }
 .dec .k { color:var(--muted); font-family:var(--mono); } .dec .v { font-family:var(--mono); text-align:right; }
 .bar { height:8px; background:var(--line); border-radius:3px; overflow:hidden; } .bar i { display:block; height:100%; background:var(--c,#fff); }
 .dec.dim { opacity:.45; }
+.inst { display:flex; align-items:center; gap:8px; margin:2px 0 6px; }
+.gauge { width:80px; height:8px; background:var(--line); border-radius:3px; overflow:hidden; } .gauge i { display:block; height:100%; width:0; background:#22c55e; transition:width .15s; }
+.lamp { font-size:9px; font-weight:700; letter-spacing:.5px; padding:2px 5px; border-radius:3px; background:#2a1717; color:#6b3535; } .lamp.on { background:#ef4444; color:#fff; box-shadow:0 0 8px #ef4444aa; }
+.wheel { width:28px; height:28px; color:#c9d0de; } .wheel g { transition:transform .2s; }
+.deg { font-family:var(--mono); font-size:10px; color:var(--muted); min-width:60px; }
 .stand { font-family:var(--mono); font-size:12px; } .stand div { display:flex; justify-content:space-between; padding:2px 0; }
 .stats { color:var(--muted); font-size:11px; font-family:var(--mono); }
 .log { font-family:var(--mono); font-size:11px; color:var(--muted); max-height:140px; overflow:auto; }
 .log b { color:var(--ink); font-weight:500; }
 details summary { cursor:pointer; color:var(--muted); font-size:12px; }
-pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:320px; margin:6px 0 0; }
+pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:360px; margin:6px 0 0; }
 @media (max-width: 900px) { main { grid-template-columns:1fr; } .side { max-height:none; } }
 </style>
 </head>
