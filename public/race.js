@@ -120,7 +120,7 @@ function trackOk() { // fits the canvas, not absurdly sharp, and no two separate
   return true;
 }
 const snapshotTrack = () => ({ pts, L, FEATURES });
-function setTrack(t) { ({ pts, L, FEATURES } = t); BOOST_PAD = null; }
+function setTrack(t) { ({ pts, L, FEATURES } = t); }
 function randomTrack() {
   for (let tries = 0; tries < 60; tries++) { buildTrack(randomCP()); if (trackOk()) return snapshotTrack(); }
   buildTrack(DEFAULT_CP); return snapshotTrack();
@@ -175,31 +175,13 @@ function turnAhead(s, look) { // sign of the next significant corner (+1 right, 
   return Math.abs(best) > 0.004 ? Math.sign(best) : 0;
 }
 buildTrack(DEFAULT_CP);
-// ---------- booster pad: a race event, not a track feature ----------
-// Twice per race, at random moments, a pad appears on a random straight for a short while. Crossing it recharges the boost of a
-// driver who has already spent theirs this lap, so it rewards whoever spent early and is bold enough to go for it.
-let BOOST_PAD = null; // {s0, s1, mid, len, until, name, kind} while one is live
-const PAD_LIFE = 15; // seconds it stays on the road
-function spawnPad() {
-  const straights = FEATURES.filter((f) => f.kind === "straight"), long = straights.filter((f) => f.len >= 200);
-  const on = (long.length ? long : straights)[Math.floor(Math.random() * Math.max(1, straights.length))], len = L * 0.05;
-  const s0 = on ? (on.s0 + Math.random() * Math.max(0, on.len - len)) % L : Math.random() * L;
-  BOOST_PAD = { kind: "pad", name: "booster pad", id: race.t, s0, s1: s0 + len, mid: s0 + len / 2, len, limit: V_TOP, until: race.t + PAD_LIFE };
-  log(`⚡ A booster pad appears on the ${on ? on.name : "track"}: cross it to recharge the boost`);
-}
-function padStep() { // spawn when the leader passes the next scheduled point in the race, and retire it when its time is up
-  if (BOOST_PAD && race.t > BOOST_PAD.until) { BOOST_PAD = null; log("The booster pad fades away"); }
-  const prog = Math.max(...cars.map((c) => c.s)) / (race.laps * L);
-  if (!BOOST_PAD && race.padAt.length && prog >= race.padAt[0]) { race.padAt.shift(); spawnPad(); }
-}
 function nextFeature(s) { // nearest upcoming feature; a feature still counts as upcoming until the car is past its midpoint
-  const list = BOOST_PAD ? [...FEATURES, BOOST_PAD] : FEATURES;
   let bestD = Infinity, best = -1;
-  list.forEach((f, i) => {
+  FEATURES.forEach((f, i) => {
     const into = ((s - f.s0) % L + L) % L, d = into < f.len / 2 ? 0 : ((f.s0 - s) % L + L) % L;
-    if (d < bestD || (d === bestD && f.len < list[best].len)) { bestD = d; best = i; } // ties (the pad on a straight) go to the smaller feature
+    if (d < bestD) { bestD = d; best = i; }
   });
-  const f = list[best], ahead = (g) => ((g.s0 - f.mid) % L + L) % L; // the track feature that begins soonest after this one's midpoint
+  const f = FEATURES[best], ahead = (g) => ((g.s0 - f.mid) % L + L) % L; // the track feature that begins soonest after this one's midpoint
   const after = FEATURES.reduce((a, g) => (ahead(g) < ahead(a) ? g : a));
   return { ...f, dist: bestD, then: after.name, entry: entryWords(f) };
 }
@@ -207,20 +189,26 @@ function featureAt(s) { return FEATURES.find((f) => ((s - f.s0) % L + L) % L < f
 
 // ---------- drivers ----------
 const DRIVERS = [
-  { name: "Blaze", color: "#f97316", traits: "reckless, loves the boost, hates being behind" },
+  { name: "Blaze", color: "#f97316", traits: "reckless, loves the boost, hates being behind", grid: 4 }, // starts last, so "hates being behind" bites from lap one
   { name: "Vera", color: "#22c55e", traits: "calm and calculating, brakes early, only passes when it is safe" },
   { name: "Rook", color: "#3b82f6", traits: "aggressive defender, blocks rivals, takes risks only when losing" },
   { name: "Pip", color: "#e879f9", traits: "nervous rookie, avoids contact, cautious into corners, brave on straights" },
 ];
 const cars = [];
-const newRace = (running) => ({ running, laps: Number($("#laps").value) || 3, t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [], padAt: [0.1 + Math.random() * 0.35, 0.55 + Math.random() * 0.3] }); // padAt: fractions of the race distance at which a pad appears
+const newRace = (running) => ({ running, laps: Number($("#laps").value) || 3, t: 0, finished: [], reqs: 0, tokens: 0, cost: 0, latency: [] });
 let race = newRace(false);
 
+function gridOrder() { // drivers with a grid number take that slot; the rest fill the remaining slots in list order
+  const slots = new Array(DRIVERS.length).fill(null);
+  for (const d of DRIVERS) if (d.grid) slots[d.grid - 1] = d;
+  let k = 0; for (const d of DRIVERS) if (!d.grid) { while (slots[k]) k++; slots[k] = d; }
+  return slots;
+}
 function resetCars() {
-  cars.length = 0;
+  cars.length = 0; const grid = gridOrder();
   DRIVERS.forEach((d, i) => cars.push({
-    ...d, i, s: -30 - i * 28, lat: i % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, turn: 1, done: false, finishT: null,
-    dec: { line: "middle", pace: "steady", overtake: false, boost: false, conf: {}, probs: {} }, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null,
+    ...d, i, s: -30 - grid.indexOf(d) * 28, lat: grid.indexOf(d) % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, turn: 1, done: false, finishT: null,
+    dec: { line: "middle", pace: "steady", overtake: false, boost: false, conf: {}, probs: {} }, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null, contact: null,
   }));
 }
 
@@ -236,7 +224,6 @@ function advance(c, ds) { // move along the track; laps are counted here so spin
 }
 function step(dt) {
   race.t += dt;
-  padStep();
   const order = ranking();
   for (const c of cars) {
     if (c.done) { c.v = lerp(c.v, 60, dt); advance(c, c.v * dt); continue; }
@@ -249,7 +236,6 @@ function step(dt) {
     c.lat = lerp(c.lat, laneT, dt * 3);
     // pace: how close to the limit into the next corner
     const paceF = { attack: 1.12, steady: 1.0, cautious: 0.86 }[c.dec.pace] ?? 1;
-    if (BOOST_PAD && sm > BOOST_PAD.s0 && sm < BOOST_PAD.s1 && c.padId !== BOOST_PAD.id) { c.padId = BOOST_PAD.id; if (!c.boostAvail) { c.boostAvail = true; log(`⚡ ${c.name} crosses the pad and recharges the boost`); } } // one recharge per car per pad
     let target = V_TOP;
     for (let d = 0; d < look; d += 5) { const v = Math.min(V_TOP, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
     if (c.dec.overtake) target *= 1.06;
@@ -267,7 +253,41 @@ function step(dt) {
     c.nextThink -= dt;
     if (c.nextThink <= 0 && !c.thinking) { c.nextThink = Number($("#tick").value) / 1000; think(c, order); }
   }
+  collide();
   if (cars.every((c) => c.done) && race.running) { race.running = false; log("Race over."); }
+}
+// ---------- contact ----------
+// Cars are 22 px long and 12 px wide. Two racing cars on the same bit of road are pushed apart: nose to tail along the track,
+// with the faster car handing speed to the one it hits; alongside, sideways off their lines. A hard hit can spin the car that took it.
+const CAR_LEN = 24, CAR_W = 13, LAT_PX = WIDTH * 0.42;
+const lastBump = new Map(); // pair -> race time, so one scrape does not fill the log
+function collide() {
+  for (let i = 0; i < cars.length; i++) for (let j = i + 1; j < cars.length; j++) {
+    const a = cars[i], b = cars[j]; if (a.done || b.done) continue;
+    let g = ((b.s - a.s) % L + L) % L; if (g > L / 2) g -= L; // signed gap, positive when b is ahead
+    const dl = (b.lat - a.lat) * LAT_PX;
+    if (Math.abs(g) >= CAR_LEN || Math.abs(dl) >= CAR_W) continue;
+    const [back, front] = g > 0 ? [a, b] : [b, a], gap = Math.abs(g);
+    let hard, kind, victim;
+    if (gap > CAR_W) { // nose to tail: separate along the track and trade speed
+      const push = (CAR_LEN - gap) / 2; back.s -= push; front.s += push;
+      const dv = Math.max(0, back.v - front.v); front.v += dv * 0.6; back.v -= dv * 0.6;
+      hard = dv; kind = "rear-ended"; victim = front;
+    } else { // alongside: shove apart sideways, the faster car holds its line better
+      const dir = Math.sign(dl) || (Math.random() < 0.5 ? 1 : -1), push = (CAR_W - Math.abs(dl)) / LAT_PX;
+      const wa = b.v / (a.v + b.v + 1e-6); a.lat = clamp(a.lat - dir * push * wa, -1, 1); b.lat = clamp(b.lat + dir * push * (1 - wa), -1, 1);
+      hard = 8 + Math.abs(a.v - b.v) * 0.5; kind = "side by side with"; victim = a.v < b.v ? a : b;
+    }
+    const other = (c) => (c === a ? b : a);
+    for (const c of [a, b]) c.contact = { with: other(c).name, t: race.t, kind: c === back ? (kind === "rear-ended" ? "ran into the back of" : kind) : (kind === "rear-ended" ? "was hit from behind by" : kind) };
+    const key = `${a.name}|${b.name}`;
+    if (hard > 12 && (lastBump.get(key) ?? -9) < race.t - 1.5) {
+      lastBump.set(key, race.t);
+      log(`${back.name} ${kind === "rear-ended" ? "runs into the back of" : "rubs wheels with"} ${front.name}`);
+      const p = clamp((hard - 30) / 80, 0, 0.6); // a firm hit is a scare, a hard one can spin the car that took it
+      if (victim.spin <= 0 && Math.random() < p) { victim.spin = 1.2; victim.v *= 0.35; log(`💥 ${victim.name} is spun round by the contact!`); }
+    }
+  }
 }
 function ranking() { return [...cars].sort((a, b) => (a.finishT ?? Infinity) - (b.finishT ?? Infinity) || b.s - a.s); } // s already accumulates across laps
 
@@ -280,16 +300,16 @@ function buildState(c, order) {
   const laneName = (lat) => { const r = lat * c.turn; return r > 0.3 ? "inside" : r < -0.3 ? "outside" : "middle"; }; // relative to the next corner
   const desc = (o, g) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), lane: laneName(o.lat), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
   return {
-    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : BOOST_PAD ? "used this lap, but a booster pad is on the track and crossing it recharges it" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
-    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable" },
-    track_ahead: { next: f.kind === "pad" ? "booster pad (crossing it recharges a spent boost)" : f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
+    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
+    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable", contact: c.contact && race.t - c.contact.t < 2 ? `just ${c.contact.kind} ${c.contact.with}` : "none lately" },
+    track_ahead: { next: f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
     rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0) },
   };
 }
 const QUESTIONS = {
   line: { type: "choice", instructions: "Which lane should `driver` take through `track_ahead.next`, given `rivals` and the driver's `driver.traits`?", criteria: { inside: "Tight line, shortest distance, less forgiving if too fast", middle: "Neutral line", outside: "Wide line, more forgiving at speed, longer distance" } },
   pace: { type: "choice", instructions: "How hard should `driver` push into `track_ahead.next`?", criteria: { attack: "Brake as late as possible, carry maximum speed, accept a real risk of spinning", steady: "Brake normally and stay in control", cautious: "Brake early and protect the position, giving up some time" } },
-  overtake: { type: "noul", instructions: "Should `driver` attempt to pass `rivals.ahead` before `track_ahead.next`?", criteria: { true: "There is a rival close ahead and passing now fits the driver's traits and the situation", false: "No rival close ahead, or passing now is unwise for this driver" } },
+  overtake: { type: "noul", instructions: "Should `driver` attempt to pass `rivals.ahead` before `track_ahead.next`?", criteria: { true: "There is a rival close ahead and passing now fits the driver's traits and the situation; contact is possible, and it costs speed and can spin either car", false: "No rival close ahead, or passing now is unwise for this driver" } },
   boost: { type: "noul", instructions: "Should `driver` use the boost right now, considering `driver.boost`, `track_ahead` and `rivals`?", criteria: { true: "Boost is available and this moment (a straight or a pass) is a good use of it", false: "Boost is unavailable, or a better moment is coming" } },
 };
 async function think(c, order) {
@@ -325,16 +345,11 @@ function draw() {
   ctx.strokeStyle = "#1c2233"; ctx.lineWidth = WIDTH + 10; tracePath(); ctx.stroke();
   ctx.strokeStyle = "#2a3247"; ctx.lineWidth = WIDTH; tracePath(); ctx.stroke();
   ctx.setLineDash([10, 14]); ctx.strokeStyle = "#3d4763"; ctx.lineWidth = 2; tracePath(); ctx.stroke(); ctx.setLineDash([]);
-  // booster pad, while one is live
-  if (BOOST_PAD) {
-    const left = BOOST_PAD.until - race.t, pulse = 0.3 + 0.15 * Math.sin(race.t * 6);
-    ctx.strokeStyle = "#facc15"; ctx.lineWidth = WIDTH - 8; ctx.globalAlpha = Math.min(1, left / 2) * pulse; ctx.beginPath(); for (let s = BOOST_PAD.s0; s <= BOOST_PAD.s1; s += 6) { const p = at(s); s === BOOST_PAD.s0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y); } ctx.stroke(); ctx.globalAlpha = 1;
-  }
-  for (const f of BOOST_PAD ? [...FEATURES, BOOST_PAD] : FEATURES) { // name every feature, pushed off the road: to the outside of a corner, away from the middle for a straight
+  for (const f of FEATURES) { // name every feature, pushed off the road: to the outside of a corner, away from the middle for a straight
     const p = at(f.mid), nx = Math.cos(p.h + Math.PI / 2), ny = Math.sin(p.h + Math.PI / 2);
-    const out = Math.sign(nx * (p.x - 550) + ny * (p.y - 370)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : f.kind === "pad" ? -out : out, off = WIDTH / 2 + 14; // the pad label goes inside, so it never sits on its straight's label
+    const out = Math.sign(nx * (p.x - 550) + ny * (p.y - 370)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : out, off = WIDTH / 2 + 14;
     const dx = nx * side, align = dx > 0.4 ? "left" : dx < -0.4 ? "right" : "center"; // anchor the text on the side away from the road
-    label(f.name, p.x + dx * off, p.y + ny * side * off + 4, f.kind === "pad" ? "#facc15" : isCorner(f) ? "#8a93a6" : "#5d6780", align);
+    label(f.name, p.x + dx * off, p.y + ny * side * off + 4, isCorner(f) ? "#8a93a6" : "#5d6780", align);
   }
   // start line
   const s0 = at(0); ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(s0.x + Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y + Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.lineTo(s0.x - Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y - Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.stroke();
@@ -343,6 +358,7 @@ function draw() {
     const p = pos(c.s, c.lat);
     ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.h); if (c.spin > 0) ctx.rotate(c.spin * 9);
     if (c.boostT > 0) { ctx.fillStyle = "rgba(250,204,21,.8)"; ctx.fillRect(-22, -4, 10, 8); }
+    if (c.contact && race.t - c.contact.t < 0.3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.globalAlpha = 1 - (race.t - c.contact.t) / 0.3; ctx.strokeRect(-14, -9, 28, 18); ctx.globalAlpha = 1; } // flash on contact
     ctx.fillStyle = c.color; ctx.fillRect(-11, -6, 22, 12); ctx.fillStyle = "#111"; ctx.fillRect(-3, -5, 8, 10);
     ctx.restore();
     ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(c.name, p.x + 14, p.y - 10);
@@ -381,7 +397,7 @@ function syncPlay() { // one button: play starts or resumes, pause pauses; it re
   const playing = race.running && !paused, title = playing ? "Pause" : race.running ? "Resume" : "Start race";
   const b = $("#play"); if (b.title !== title) { b.textContent = playing ? "❚❚" : "▶"; b.title = title; b.setAttribute("aria-label", title); }
 }
-function resetRace() { race = newRace(false); BOOST_PAD = null; paused = false; logs.length = 0; resetCars(); renderSide(); $("#log").innerHTML = ""; }
+function resetRace() { race = newRace(false); paused = false; logs.length = 0; resetCars(); renderSide(); $("#log").innerHTML = ""; }
 async function init() {
   const cfg = await fetch("/api/config").then((r) => r.json());
   const live = Object.entries(cfg.providers).find(([k, p]) => k !== "mock" && p.hasKey);
@@ -389,7 +405,7 @@ async function init() {
   const ms = $("#model"); const fill = () => { ms.innerHTML = cfg.providers[ps.value].models.map((m) => `<option>${m}</option>`).join(""); }; fill(); ps.addEventListener("change", fill);
   $("#play").addEventListener("click", () => {
     if (race.running) { paused = !paused; return; }
-    race = newRace(true); BOOST_PAD = null; logs.length = 0; resetCars(); paused = false; log("Lights out!"); renderSide();
+    race = newRace(true); logs.length = 0; resetCars(); paused = false; log("Lights out!"); renderSide();
   });
   $("#reset").addEventListener("click", resetRace);
   $("#randomize").addEventListener("click", async () => {
