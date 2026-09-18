@@ -374,7 +374,7 @@ async function think(c, order) {
   } catch (e) { log(`${c.name}: ${e.message}`); }
   c.thinking = false;
   renderSide();
-  if (selected === c) $("#raw").textContent = JSON.stringify({ request: c.lastReq, response: c.lastRes }, null, 2);
+  if (selected === c) renderDebug();
 }
 
 // ---------- render ----------
@@ -391,6 +391,7 @@ function draw() {
     const dx = nx * side, align = dx > 0.4 ? "left" : dx < -0.4 ? "right" : "center"; // anchor the text on the side away from the road
     label(f.name, p.x + dx * off, p.y + ny * side * off + 4, isCorner(f) ? "#8a93a6" : "#5d6780", align);
   }
+  if (race.running || race.finished.length) { ctx.fillStyle = "#e8eaf0"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "left"; ctx.fillText(race.running ? `LAP ${currentLap()} / ${race.laps}` : "FINISH", 18, 34); }
   // start line
   const s0 = at(0); ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(s0.x + Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y + Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.lineTo(s0.x - Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y - Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.stroke();
   // cars
@@ -412,13 +413,21 @@ function label(t, x, y, col, align = "center") { // kept inside the canvas
   ctx.fillText(t, x + clamp(left, 4, cv.width - w - 4) - left, clamp(y, 12, cv.height - 4)); ctx.textAlign = "left";
 }
 
-let selected = null;
+let selected = null, debugView = null; // debugView: a car, "track", or null
+function selectDriver(c) { selected = c; debugView = c; $("#dbg").value = String(c.i); updateCards(); renderDebug(); }
+function renderDebug() { // the exact request body a driver last sent and what came back; live while the race runs
+  const view = debugView === "track" ? trackDesign : debugView?.lastReq ? { request: debugView.lastReq, response: debugView.lastRes } : null;
+  const at = (el, v) => { const txt = v == null ? "– nothing sent yet –" : JSON.stringify(v, null, 2); if (el.textContent !== txt) el.textContent = txt; };
+  at($("#raw"), view?.request); at($("#rawres"), view?.response);
+  $("#dbgmeta").textContent = debugView && debugView !== "track" ? `${debugView.thinking ? "request in flight · " : ""}${debugView.lastReq ? `${JSON.stringify(debugView.lastReq).length} chars` : ""}` : "";
+}
+const currentLap = () => Math.min(race.laps, Math.max(1, ...cars.map((c) => c.lap + 1))); // the leader's lap
 function renderSide() { // standings and stats; the driver cards are built once and updated in place, so nothing flickers
   const order = ranking();
   $("#standings").innerHTML = order.map((c, i) => `<div><span style="color:${c.color}">P${i + 1} ${c.name}</span><span>${c.done ? `finished ${c.finishT.toFixed(1)}s` : `lap ${Math.min(c.lap + 1, race.laps)} · ${Math.round(c.v)}`}</span></div>`).join("");
   const avgLat = race.latency.length ? Math.round(race.latency.reduce((a, b) => a + b, 0) / race.latency.length) : 0;
   $("#stats").textContent = `${race.reqs} Jev requests · ${race.tokens.toLocaleString()} input tokens · $${race.cost.toFixed(5)} · avg ${avgLat} ms`;
-  $("#racestate").textContent = race.running ? `${race.t.toFixed(1)}s` : "";
+  $("#racestate").textContent = race.running ? `Lap ${currentLap()} / ${race.laps} · ${race.t.toFixed(1)}s` : race.finished.length ? `Finished · ${race.t.toFixed(1)}s` : "";
   if (document.querySelectorAll("#drivers .card").length !== cars.length) buildCards();
   updateCards();
 }
@@ -428,7 +437,8 @@ function buildCards() {
   $("#drivers").innerHTML = cars.map((c) => `<div class="card" data-i="${c.i}" style="--c:${c.color};cursor:pointer"><h3>${c.name} <span class="stats" id="hdr${c.i}"></span></h3><div class="traits">${c.traits}</div>
       <div class="inst"><span class="gauge" title="throttle"><i id="thr${c.i}"></i></span><span class="lamp" id="brk${c.i}">BRAKE</span><svg class="wheel" viewBox="0 0 40 40"><g id="whl${c.i}"><circle cx="20" cy="20" r="16" fill="none" stroke="currentColor" stroke-width="4"/><path d="M20 20 L20 34 M20 20 L7 13 M20 20 L33 13" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><circle cx="20" cy="4" r="2.5" fill="#f97316" stroke="none"/></g></svg><span class="deg" id="deg${c.i}"></span></div>
       ${PACE_STEPS.map((s, i) => row(`p${c.i}_${i}`, `pace: ${s}`)).join("")}${LINE_STEPS.map((s, i) => row(`w${c.i}_${i}`, `line: ${s}`)).join("")}${row(`o${c.i}`, "overtake")}${row(`b${c.i}`, "boost")}</div>`).join("");
-  document.querySelectorAll("#drivers .card").forEach((el) => el.addEventListener("click", () => { selected = cars[Number(el.dataset.i)]; $("#raw").textContent = JSON.stringify({ request: selected.lastReq, response: selected.lastRes }, null, 2); updateCards(); }));
+  document.querySelectorAll("#drivers .card").forEach((el) => el.addEventListener("click", () => { selectDriver(cars[Number(el.dataset.i)]); }));
+  $("#dbg").innerHTML = `<option value="">– pick a driver –</option>${cars.map((c) => `<option value="${c.i}">${c.name}</option>`).join("")}<option value="track">Track design</option>`;
 }
 function updateCards() {
   const setRow = (id, p, bright, label) => { const el = $(`#${id}`); if (!el || p == null) return; el.classList.toggle("dim", !bright); el.querySelector(".bar i").style.width = `${(p * 100).toFixed(0)}%`; el.querySelector(".v").textContent = p.toFixed(2); if (label) el.querySelector(".k").textContent = label; };
@@ -447,7 +457,8 @@ function log(m) { logs.unshift(`<div><b>${race.t.toFixed(1)}s</b> ${m}</div>`); 
 // ---------- loop & init ----------
 let last = 0, paused = false;
 function frame(t) { const dt = Math.min(0.05, (t - last) / 1000 || 0); last = t; if (race.running && !paused) step(dt); draw(); syncPlay(); instruments(); requestAnimationFrame(frame); }
-function instruments() { // throttle gauge, brake lamp and wheel angle, live
+function instruments() { // throttle gauge, brake lamp, wheel angle and the lap counter, live
+  if (race.running) $("#racestate").textContent = `Lap ${currentLap()} / ${race.laps} · ${race.t.toFixed(1)}s`;
   for (const c of cars) {
     const thr = $(`#thr${c.i}`); if (!thr) continue;
     thr.style.width = `${Math.round((c.throttle ?? 0) * 100)}%`; // what the code is doing: on the throttle, or on the brakes
@@ -471,11 +482,12 @@ async function init() {
     race = newRace(true); logs.length = 0; resetCars(); paused = false; log("Lights out!"); renderSide();
   });
   $("#reset").addEventListener("click", resetRace);
+  $("#dbg").addEventListener("change", () => { const v = $("#dbg").value; debugView = v === "track" ? "track" : v === "" ? null : cars[Number(v)]; if (debugView && debugView !== "track") { selected = debugView; updateCards(); } renderDebug(); });
   $("#randomize").addEventListener("click", async () => {
     const btn = $("#randomize"); btn.disabled = true; btn.textContent = "Drafting…";
     race.running = false; logs.length = 0; log("Drafting five circuits and asking Jev to pick one…"); renderSide();
     const summary = await designTrack();
-    resetCars(); log(summary); renderSide(); $("#raw").textContent = JSON.stringify(trackDesign, null, 2);
+    resetCars(); log(summary); renderSide(); debugView = "track"; $("#dbg").value = "track"; renderDebug();
     btn.disabled = false; btn.textContent = "New track";
   });
   const want = new URLSearchParams(location.search).get("track");

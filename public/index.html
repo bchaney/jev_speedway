@@ -35,6 +35,8 @@ canvas { width:100%; background:#0f1320; border:1px solid var(--line); border-ra
 .log b { color:var(--ink); font-weight:500; }
 details summary { cursor:pointer; color:var(--muted); font-size:12px; }
 pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:360px; margin:6px 0 0; }
+.debug .panes { display:grid; grid-template-columns: 3fr 2fr; gap:8px; } .debug .panes > div, main > div, .debug { min-width:0; } .debug pre { white-space:pre; } .debug h3 label { font-weight:400; } .debug select { padding:2px 6px; font-size:11px; }
+@media (max-width: 900px) { .debug .panes { grid-template-columns:1fr; } }
 @media (max-width: 900px) { main { grid-template-columns:1fr; } .side { max-height:none; } }
 </style>
 </head>
@@ -55,7 +57,10 @@ pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--lin
 <main>
   <div>
     <canvas id="c" width="1100" height="720"></canvas>
-    <details style="margin-top:8px"><summary>Last request / response for the selected driver (click a driver card)</summary><pre id="raw">–</pre></details>
+    <div class="card debug" style="--c:#555;margin-top:8px">
+      <h3>Debug: what Jev is sent <span class="stats"><label>Driver <select id="dbg"></select></label> <span id="dbgmeta"></span></span></h3>
+      <div class="panes"><div><div class="stats">Request (state + questions)</div><pre id="raw">–</pre></div><div><div class="stats">Response</div><pre id="rawres">–</pre></div></div>
+    </div>
   </div>
   <div class="side">
     <div class="card" style="--c:#fff"><h3>Standings <span id="racestate" class="stats"></span></h3><div id="standings" class="stand"></div><div id="stats" class="stats"></div></div>
