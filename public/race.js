@@ -26,12 +26,23 @@ for (let i = 0; i < pts.length; i++) { // signed curvature via heading change
   pts[i].kappa = d / (Math.hypot(c.x - a.x, c.y - a.y) || 1);
 }
 const WIDTH = 46;
-function at(s) { s = ((s % L) + L) % L; let i = Math.floor(s / L * pts.length); i = clamp(i, 0, pts.length - 1); const p = pts[i], n = pts[(i + 1) % pts.length]; const h = Math.atan2(n.y - p.y, n.x - p.x); return { x: p.x, y: p.y, h, kappa: p.kappa }; }
+function at(s) { // spline points are unevenly spaced, so look the index up by accumulated arc length
+  s = ((s % L) + L) % L; let lo = 0, hi = pts.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid].s <= s) lo = mid; else hi = mid - 1; }
+  const p = pts[lo], n = pts[(lo + 1) % pts.length]; const h = Math.atan2(n.y - p.y, n.x - p.x); return { x: p.x, y: p.y, h, kappa: p.kappa };
+}
 function pos(s, lat) { const p = at(s); return { x: p.x + Math.cos(p.h + Math.PI / 2) * lat * WIDTH * 0.42, y: p.y + Math.sin(p.h + Math.PI / 2) * lat * WIDTH * 0.42, h: p.h }; }
 // features (by track distance)
-const V_TOP = 150, GRIP = 3200, ACCEL = 65, BRAKE = 160;
-function cornerLimit(s) { return Math.sqrt(GRIP / Math.max(Math.abs(at(s).kappa), 1e-4)); } // physical grip limit, uncapped
-function vmax(s) { return Math.min(V_TOP, cornerLimit(s)); }
+const V_TOP = 150, GRIP = 120, ACCEL = 65, BRAKE = 160; // GRIP sized so the hairpin limits to ~75 px/s and the sweepers to ~100-150
+// Lateral offset changes the real path: the inside of a corner is shorter but tighter, the outside longer but more forgiving.
+// Positive kappa is a right-hand turn on screen; positive lat is the right-hand side of the road.
+function pathAt(s, lat) { const k = at(s).kappa; const denom = clamp(1 - k * lat * WIDTH * 0.42, 0.6, 1.4); return { kappa: k / denom, progress: 1 / denom }; }
+function cornerLimit(s, lat = 0) { return Math.sqrt(GRIP / Math.max(Math.abs(pathAt(s, lat).kappa), 1e-4)); } // physical grip limit, uncapped
+function vmax(s, lat = 0) { return Math.min(V_TOP, cornerLimit(s, lat)); }
+function turnAhead(s, look) { // sign of the next significant corner (+1 right, -1 left, 0 none in range)
+  let best = 0; for (let d = 0; d <= look; d += 10) { const k = at(s + d).kappa; if (Math.abs(k) > Math.abs(best)) best = k; }
+  return Math.abs(best) > 0.004 ? Math.sign(best) : 0;
+}
 const BOOST_PAD = { s0: L * 0.06, s1: L * 0.11 };
 const SHORTCUT = { entry: L * 0.60, exit: L * 0.71, minSpeed: 100, airTime: 0.9 }; // a jump over the S-bend; too slow = crash
 const HAIRPIN = (() => { let best = 0, bs = 0; for (const p of pts) if (Math.abs(p.kappa) > best) { best = Math.abs(p.kappa); bs = p.s; } return bs; })();
@@ -60,39 +71,51 @@ const bucket = (v, arr) => { for (const [lim, name] of arr) if (v < lim) return 
 function resetCars() {
   cars.length = 0;
   DRIVERS.forEach((d, i) => cars.push({
-    ...d, i, s: -30 - i * 28, lat: i % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, air: 0, boostAvail: true, boostT: 0, done: false, finishT: null,
+    ...d, i, s: -30 - i * 28, lat: i % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, air: 0, boostAvail: true, boostT: 0, turn: 1, done: false, finishT: null,
     dec: { line: "middle", pace: "steady", overtake: false, boost: false, shortcut: false, conf: {}, probs: {} }, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null, shortcutTaken: false,
   }));
 }
 
 // ---------- physics (code owns the car) ----------
+function advance(c, ds) { // move along the track; laps are counted here so spins and jumps across the line still count
+  const before = Math.floor(c.s / L);
+  c.s += ds;
+  if (before >= 0 && Math.floor(c.s / L) > before) { // before >= 0: the grid sits behind the line, the first crossing is not a lap
+    c.lap++; c.boostAvail = true;
+    if (c.lap >= race.laps && !c.done) { c.done = true; c.finishT = race.t; race.finished.push(c.name); log(`🏁 ${c.name} finishes P${race.finished.length}`); }
+    else if (!c.done) log(`${c.name} completes lap ${c.lap}`);
+  }
+}
 function step(dt) {
   race.t += dt;
   const order = ranking();
   for (const c of cars) {
-    if (c.done) { c.v = lerp(c.v, 60, dt); c.s += c.v * dt; continue; }
-    if (c.spin > 0) { c.spin -= dt; c.v = lerp(c.v, 0, dt * 2); c.s += c.v * dt; continue; }
-    if (c.air > 0) { c.air -= dt; c.s += c.v * dt * 1.6; if (c.air <= 0) { c.lat = -0.4; } continue; }
+    if (c.done) { c.v = lerp(c.v, 60, dt); advance(c, c.v * dt); continue; }
+    if (c.spin > 0) { c.spin -= dt; c.v = lerp(c.v, 0, dt * 2); advance(c, c.v * dt); continue; }
+    if (c.air > 0) { c.air -= dt; if (c.air <= 0) { advance(c, Math.floor(c.s / L) * L + SHORTCUT.exit - c.s); c.lat = -0.4; } continue; } // land exactly at the exit
     const sm = ((c.s % L) + L) % L;
-    // target lane from decision, hesitation if low confidence
-    const laneT = { inside: -0.85, middle: 0, outside: 0.85 }[c.dec.line] ?? 0;
+    const look = 40 + c.v * 0.55;
+    c.turn = turnAhead(sm, look + 60) || c.turn;
+    // target lane from decision, relative to the upcoming corner; hesitation if low confidence
+    const laneT = { inside: 0.85 * c.turn, middle: 0, outside: -0.85 * c.turn }[c.dec.line] ?? 0;
     c.lat = lerp(c.lat, laneT, dt * 3);
     // pace: how close to the limit into the next corner
     const paceF = { attack: 1.12, steady: 1.0, cautious: 0.86 }[c.dec.pace] ?? 1;
-    const look = 40 + c.v * 0.55;
-    let target = V_TOP;
-    for (let d = 0; d < look; d += 10) target = Math.min(target, vmax(sm + d) * paceF + (d / look) * 40);
+    const onPad = sm > BOOST_PAD.s0 && sm < BOOST_PAD.s1;
+    const ceil = onPad ? V_TOP * 1.2 : V_TOP; // the pad raises the ceiling but still respects the corners, so it never punishes a careful driver
+    let target = ceil;
+    for (let d = 0; d < look; d += 5) { const v = Math.min(ceil, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
     if (c.dec.overtake) target *= 1.06;
-    if (sm > BOOST_PAD.s0 && sm < BOOST_PAD.s1) target = V_TOP * 1.2, c.v = Math.max(c.v, c.v + 55 * dt);
-    if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.boostT = 1.4; log(`${c.name} hits the boost`); }
-    if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; }
+    if (onPad) c.v = Math.max(c.v, Math.min(target, c.v + 55 * dt));
+    if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.dec.boost = false; c.boostT = 1.4; log(`${c.name} hits the boost`); } // consume the decision so a new lap needs a fresh call
+    if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; } // the driver's own boost ignores the corner cap: boosting into a corner is the risk Jev is asked about
     // blocking: car directly ahead in same lane caps speed
     for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 26 && Math.abs(o.lat - c.lat) < 0.7) target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); }
     // accelerate / brake
     if (c.v < target) c.v = Math.min(target, c.v + ACCEL * dt * (c.boostT > 0 ? 2 : 1)); else c.v = Math.max(target, c.v - BRAKE * dt);
-    // grip check: too fast for the corner => spin
-    const limit = cornerLimit(sm) * (1 + 0.12 * (c.lat > 0.3 ? 0.5 : 0)); // outside line is a little more forgiving; straights never spin
-    if (c.v > limit * 1.08) { c.spin = 1.2; c.v *= 0.35; log(`${c.name} spins out in the ${nextFeature(sm).dist < 60 ? nextFeature(sm).name : "corner"}!`); }
+    // grip check: over the limit of the actual path is a risk that grows with the overshoot, not a certainty; straights never spin
+    const over = c.v / (cornerLimit(sm, c.lat) * 1.05) - 1; // 5% tolerance so a steady car at the limit is safe; attack (12% over) is not
+    if (over > 0 && Math.random() < over * dt * 8) { c.spin = 1.2; c.v *= 0.35; log(`${c.name} spins out in the ${nextFeature(sm).dist < 60 ? nextFeature(sm).name : "corner"}!`); }
     // shortcut jump
     if (c.dec.shortcut && !c.shortcutTaken && sm > SHORTCUT.entry - 6 && sm < SHORTCUT.entry + 6) {
       c.shortcutTaken = true;
@@ -100,16 +123,14 @@ function step(dt) {
       else { c.spin = 2.0; c.v = 0; log(`${c.name} tried the jump too slowly and crashed`); }
     }
     if (sm > SHORTCUT.exit + 20 && sm < SHORTCUT.exit + 60) c.shortcutTaken = false;
-    const before = Math.floor(c.s / L);
-    c.s += c.v * dt;
-    if (Math.floor(c.s / L) > before && c.s > 0) { c.lap++; c.boostAvail = true; if (c.lap >= race.laps) { c.done = true; c.finishT = race.t; race.finished.push(c.name); log(`🏁 ${c.name} finishes P${race.finished.length}`); } else log(`${c.name} completes lap ${c.lap}`); }
+    advance(c, c.v * dt * pathAt(sm, c.lat).progress); // inside line covers centreline distance faster
     // think
     c.nextThink -= dt;
     if (c.nextThink <= 0 && !c.thinking) { c.nextThink = Number($("#tick").value) / 1000; think(c, order); }
   }
   if (cars.every((c) => c.done) && race.running) { race.running = false; log("Race over."); }
 }
-function ranking() { return [...cars].sort((a, b) => (a.finishT ?? Infinity) - (b.finishT ?? Infinity) || (b.lap * L + b.s) - (a.lap * L + a.s)); }
+function ranking() { return [...cars].sort((a, b) => (a.finishT ?? Infinity) - (b.finishT ?? Infinity) || b.s - a.s); } // s already accumulates across laps
 
 // ---------- Jev: the driver's judgment ----------
 function buildState(c, order) {
@@ -117,11 +138,11 @@ function buildState(c, order) {
   const gapTo = (o) => o ? (((o.s - c.s) % L + L) % L) : null;
   let ahead = null, behind = null;
   for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < 140 && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < 140 && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
-  const laneName = (lat) => lat < -0.3 ? "inside" : lat > 0.3 ? "outside" : "middle";
+  const laneName = (lat) => { const r = lat * c.turn; return r > 0.3 ? "inside" : r < -0.3 ? "outside" : "middle"; }; // relative to the next corner
   const desc = (o, g) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), lane: laneName(o.lat), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
   return {
     driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
-    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > vmax(sm) * 0.95 ? "at the limit, tyres squealing" : "comfortable" },
+    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), lane: laneName(c.lat), grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable" },
     track_ahead: { next: f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), after_that: f.then, hairpin_note: "the hairpin is the tightest corner; entering it fast without braking causes a spin" },
     rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0) },
     shortcut: { available: f.name === "shortcut jump entry" && f.dist < 200, description: "a jump that skips the S-bend and gains about two seconds; it only works when the car is fast or flat out; a slow attempt crashes and loses about three seconds" },
