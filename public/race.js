@@ -1,4 +1,5 @@
 // Jev Speedway: code drives, Jev judges.
+import { PRICE_PER_MTOK } from "/lib/jev.mjs";
 const $ = (s) => document.querySelector(s);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -115,7 +116,7 @@ function buildState(c, order) {
   const sm = ((c.s % L) + L) % L, p = order.indexOf(c) + 1, f = nextFeature(sm);
   const gapTo = (o) => o ? (((o.s - c.s) % L + L) % L) : null;
   let ahead = null, behind = null;
-  for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gb = gapTo(c) - 0; const gBehind = ((c.s - o.s) % L + L) % L; if (g < 140 && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < 140 && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
+  for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < 140 && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < 140 && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
   const laneName = (lat) => lat < -0.3 ? "inside" : lat > 0.3 ? "outside" : "middle";
   const desc = (o, g) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), lane: laneName(o.lat), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
   return {
@@ -144,7 +145,7 @@ async function think(c, order) {
     c.lastRes = r.response;
     const a = r.response?.answers;
     if (a) {
-      race.reqs++; race.tokens += r.response.usage?.input_tokens ?? 0; race.cost += r.response.usage?.cost ?? (r.response.usage?.input_tokens ?? 0) * 0.042 / 1e6; race.latency.push(r.latencyMs);
+      race.reqs++; race.tokens += r.response.usage?.input_tokens ?? 0; race.cost += r.response.usage?.cost ?? (r.response.usage?.input_tokens ?? 0) * PRICE_PER_MTOK / 1e6; race.latency.push(r.latencyMs);
       const d = c.dec;
       if (a.line.confidence >= 0.35) d.line = a.line.choice; // low confidence: hesitate, keep the lane
       d.pace = a.pace.confidence >= 0.35 ? a.pace.choice : "steady";
