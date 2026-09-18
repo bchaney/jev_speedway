@@ -1,9 +1,14 @@
 // Jev Speedway: code drives, Jev judges.
 import { PRICE_PER_MTOK } from "/lib/jev.mjs";
+import { QUESTIONS, speak } from "/world.mjs";
 const $ = (s) => document.querySelector(s);
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
 const bucket = (v, arr) => { for (const [lim, name] of arr) if (v < lim) return name; return arr[arr.length - 1][1]; };
+// Units: the track, the cars and everything Jev is told are in metres, seconds and m/s; only drawing converts to canvas pixels.
+// The control points below are canvas layout (pixels), converted once when the track is built.
+const M_PER_PX = 0.25, PX_PER_M = 1 / M_PER_PX, px = (m) => m * PX_PER_M; // the 1100 x 720 canvas is 275 m x 180 m; a lap is roughly 550-650 m
+const KMH = 3.6; // m/s to km/h, the unit speeds are spoken in (to Jev and on the standings)
 
 // ---------- track: closed Catmull-Rom spline through control points ----------
 // Circuit of the Americas, traced by eye from the map (not survey data): the uphill T1 hairpin top-left, the esses across the
@@ -11,7 +16,7 @@ const bucket = (v, arr) => { for (const [lim, name] of arr) if (v < lim) return 
 const COTA_CP = [[200,650],[150,400],[140,180],[170,90],[250,100],[330,160],[410,110],[490,170],[570,120],[650,170],[740,120],[840,150],[930,200],[990,280],[950,340],[850,370],[700,410],[550,450],[420,490],[350,510],[330,570],[400,600],[460,560],[540,540],[660,530],[760,560],[800,630],[740,680],[600,690],[450,690],[300,680]];
 const DEFAULT_CP = [[150,360],[200,180],[400,110],[650,120],[850,170],[980,320],[900,470],[760,520],[620,470],[540,360],[430,430],[330,600],[200,600],[130,500]];
 const SEG_N = 40;
-let pts = []; // {x,y,s,kappa}
+let pts = []; // {x,y,s,kappa}: metres and 1/m
 let L = 0, FEATURES = []; // FEATURES: the lap as named corners and straights, in lap order (classifyTrack)
 function buildTrack(CP) {
   pts = [];
@@ -21,7 +26,7 @@ function buildTrack(CP) {
       const t = j / SEG_N, t2 = t * t, t3 = t2 * t;
       const x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
       const y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
-      pts.push({ x, y });
+      pts.push({ x: x * M_PER_PX, y: y * M_PER_PX });
     }
   }
   L = 0;
@@ -38,9 +43,8 @@ function buildTrack(CP) {
 // The lap as a sequence of named features, the way a driver or a circuit designer talks about it. Corners are graded by the speed
 // the grip allows through them (kink, fast sweeper, medium corner, tight corner, hairpin), straights by length, and quick left-right
 // combinations are grouped into chicanes and esses. Corners are numbered T1, T2… from the start line, as on a real circuit.
-const K_IN = 0.004, K_OUT = 0.0025; // hysteresis, so a wobble in the spline's curvature does not split one corner into two
+const K_IN = 0.016, K_OUT = 0.01; // 1/m (a corner begins tighter than a 62 m radius and ends looser than 100 m): hysteresis, so a wobble in the spline's curvature does not split one corner into two
 const isCorner = (f) => f.kind === "corner" || f.kind === "chicane" || f.kind === "esses";
-const entryWords = (f) => bucket(f.limit / V_TOP, [[0.4, "brake very hard, down to walking pace"], [0.534, "brake hard"], [0.734, "brake, then carry good speed"], [0.999, "just a lift, barely any braking"], [1e9, "flat out"]]);
 function classifyTrack() {
   const n = pts.length, sAt = (i) => pts[i % n].s + Math.floor(i / n) * L;
   let start = pts.findIndex((p) => Math.abs(p.kappa) < K_OUT); if (start < 0) start = 0; // begin on a straight so no corner is cut in two
@@ -51,15 +55,15 @@ function classifyTrack() {
     if (!cur && a > K_IN && j < n) cur = { sign: Math.sign(kk), i0: i, peak: 0 };
     if (cur) cur.peak = Math.max(cur.peak, a);
   }
-  runs = runs.map((r) => ({ ...r, s0: sAt(r.i0), s1: sAt(r.i1) })).filter((r) => r.s1 - r.s0 > 20);
+  runs = runs.map((r) => ({ ...r, s0: sAt(r.i0), s1: sAt(r.i1) })).filter((r) => r.s1 - r.s0 > 5);
   const merged = []; // same direction with hardly any straight between: one double-apex corner
-  for (const r of runs) { const p = merged[merged.length - 1]; if (p && p.sign === r.sign && r.s0 - p.s1 < 30) { p.s1 = r.s1; p.peak = Math.max(p.peak, r.peak); p.apexes++; } else merged.push({ ...r, apexes: 1 }); }
+  for (const r of runs) { const p = merged[merged.length - 1]; if (p && p.sign === r.sign && r.s0 - p.s1 < 7.5) { p.s1 = r.s1; p.peak = Math.max(p.peak, r.peak); p.apexes++; } else merged.push({ ...r, apexes: 1 }); }
   const groups = []; // quick alternating flicks: two make a chicane, three or more make esses
-  for (const r of merged) { const g = groups[groups.length - 1], last = g?.[g.length - 1]; if (last && last.sign !== r.sign && r.s0 - last.s1 < 60 && r.s1 - r.s0 < 140 && last.s1 - last.s0 < 140) g.push(r); else groups.push([r]); }
+  for (const r of merged) { const g = groups[groups.length - 1], last = g?.[g.length - 1]; if (last && last.sign !== r.sign && r.s0 - last.s1 < 15 && r.s1 - r.s0 < 35 && last.s1 - last.s0 < 35) g.push(r); else groups.push([r]); }
   const grade = (r) => {
     const lim = Math.sqrt(GRIP / r.peak), len = r.s1 - r.s0;
-    const g = lim >= V_TOP ? (len < 120 ? "kink" : "gentle bend") : lim >= 110 ? "fast sweeper" : lim >= 80 ? "medium corner" : lim >= 60 ? "tight corner" : "hairpin";
-    return { limit: Math.min(lim, V_TOP), grade: (r.apexes > 1 ? "double-apex " : len > 220 && lim < V_TOP ? "long " : "") + g };
+    const g = lim >= V_TOP ? (len < 30 ? "kink" : "gentle bend") : lim >= 27.5 ? "fast sweeper" : lim >= 20 ? "medium corner" : lim >= 15 ? "tight corner" : "hairpin";
+    return { limit: Math.min(lim, V_TOP), grade: (r.apexes > 1 ? "double-apex " : len > 55 && lim < V_TOP ? "long " : "") + g };
   };
   const feats = []; let t = 0;
   for (const g of groups.sort((a, b) => (a[0].s0 % L) - (b[0].s0 % L))) {
@@ -72,18 +76,18 @@ function classifyTrack() {
   const straights = []; // whatever lies between corners, if it is long enough to be worth a name
   for (let i = 0; i < feats.length; i++) {
     const a = feats[i], b = feats[(i + 1) % feats.length], s0 = a.s1 % L, len = ((b.s0 - a.s1) % L + L) % L;
-    if (len >= 90) straights.push({ kind: "straight", s0, s1: s0 + len, mid: s0 + len / 2, len, limit: V_TOP });
+    if (len >= 22.5) straights.push({ kind: "straight", s0, s1: s0 + len, mid: s0 + len / 2, len, limit: V_TOP });
   }
   if (!feats.length) straights.push({ kind: "straight", s0: 0, s1: L, mid: L / 2, len: L, limit: V_TOP });
-  const home = straights.find((f) => ((0 - f.s0) % L + L) % L < f.len) ?? straights.find((f) => f.s0 < 150); // the one the start line sits on, or begins just after it
+  const home = straights.find((f) => ((0 - f.s0) % L + L) % L < f.len) ?? straights.find((f) => f.s0 < 37.5); // the one the start line sits on, or begins just after it
   const back = straights.filter((f) => f !== home).sort((a, b) => b.len - a.len)[0];
-  for (const f of straights) f.name = f === home ? "start/finish straight" : f === back && f.len >= 220 ? "back straight" : bucket(f.len, [[220, "short straight"], [450, "straight"], [1e9, "long straight"]]);
+  for (const f of straights) f.name = f === home ? "start/finish straight" : f === back && f.len >= 55 ? "back straight" : bucket(f.len, [[55, "short straight"], [112.5, "straight"], [1e9, "long straight"]]);
   FEATURES = [...feats, ...straights].sort((a, b) => a.s0 - b.s0);
 }
 // Random circuit in the F1 idiom: a loop of "sectors" around the canvas centre, each one a straight, a sweeper, a chicane or a
 // hairpin that notches deep toward the middle. Points are placed by angle and radius, so the loop stays star-shaped and never
 // crosses itself; trackOk() then rejects layouts where the spline's arms come too close for the road width.
-const RX = 480, RY = 300;
+const RX = 480, RY = 300; // canvas px, like the presets' control points
 const polar = (a, r) => [550 + Math.cos(a) * RX * r, 370 + Math.sin(a) * RY * r];
 function randomCP() {
   const n = 7 + Math.floor(Math.random() * 3), cp = [];
@@ -110,13 +114,14 @@ function randomCP() {
   }
   return cp;
 }
-function trackOk() { // fits the canvas, not absurdly sharp, and no two separate stretches of road overlap
-  if (L < 2200 || Math.max(...pts.map((p) => Math.abs(p.kappa))) > 0.05) return false;
-  if (pts.some((p) => p.x < 45 || p.x > 1055 || p.y < 45 || p.y > 675)) return false;
+function trackOk() { // fits the canvas, not absurdly sharp (no radius under 5 m), and no two separate stretches of road overlap
+  if (L < 550 || Math.max(...pts.map((p) => Math.abs(p.kappa))) > 0.2) return false;
+  const [x0, x1, y0, y1] = [45, 1055, 45, 675].map((v) => v * M_PER_PX); // a margin inside the canvas
+  if (pts.some((p) => p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1)) return false;
   const stride = 4;
   for (let i = 0; i < pts.length; i += stride) for (let j = i + stride; j < pts.length; j += stride) {
     const along = Math.min(pts[j].s - pts[i].s, L - (pts[j].s - pts[i].s));
-    if (along > WIDTH * 2.5 && Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) < WIDTH + 24) return false;
+    if (along > WIDTH * 2.5 && Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) < WIDTH + 6) return false;
   }
   return true;
 }
@@ -132,11 +137,11 @@ function describeTrack(t) { // words only, the way Jev likes its state
   const tight = [...corners].sort((a, b) => a.limit - b.limit)[0], long = [...straights].sort((a, b) => b.len - a.len)[0];
   const from0 = (f) => (((0 - f.s0) % L + L) % L < f.len ? 0 : ((f.s0 % L) + L) % L); // lap order, starting at the start line
   return {
-    length: bucket(L, [[2000, "short lap"], [2300, "medium lap"], [1e9, "long lap"]]),
+    length: bucket(L, [[500, "short lap"], [575, "medium lap"], [1e9, "long lap"]]),
     corners: `${corners.reduce((a, f) => a + f.turns, 0)} corners`,
     lap: [...FEATURES].sort((a, b) => from0(a) - from0(b)).map((f) => f.name).join(", "),
     tightest_corner: tight ? `${tight.name}: ${entryWords(tight)}` : "no real corners",
-    longest_straight: long ? `${long.name}, ${bucket(long.len, [[220, "short"], [450, "a decent length"], [1e9, "very long"]])}` : "no real straight",
+    longest_straight: long ? `${long.name}, ${bucket(long.len, [[55, "short"], [112.5, "a decent length"], [1e9, "very long"]])}` : "no real straight",
   };
 }
 const PRESETS = { original: () => buildTrack(DEFAULT_CP), cota: () => buildTrack(COTA_CP) };
@@ -157,7 +162,7 @@ async function designTrack() { // code drafts, Jev judges: several random circui
   const d = state.layouts[pick];
   return `Layout ${pick}: ${d.length}, ${d.corners}, tightest ${d.tightest_corner}; lap: ${d.lap}. ${note}`;
 }
-const WIDTH = 54;
+const WIDTH = 13.5; // road width, m
 function at(s) { // spline points are unevenly spaced, so look the index up by accumulated arc length
   s = ((s % L) + L) % L; let lo = 0, hi = pts.length - 1;
   while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid].s <= s) lo = mid; else hi = mid - 1; }
@@ -165,7 +170,7 @@ function at(s) { // spline points are unevenly spaced, so look the index up by a
 }
 function pos(s, lat) { const p = at(s); return { x: p.x + Math.cos(p.h + Math.PI / 2) * lat * WIDTH * 0.42, y: p.y + Math.sin(p.h + Math.PI / 2) * lat * WIDTH * 0.42, h: p.h }; }
 // features (by track distance)
-const V_TOP = 150, GRIP = 120, ACCEL = 65, BRAKE = 160, DRAG = 45, CRAWL = 40, DRAFT_RANGE = 90, STEER_RATE = 2; // CRAWL: slower than any corner needs, and as slow as braking or coasting will take a car // GRIP sized so the hairpin limits to ~75 px/s and the sweepers to ~100-150
+const V_TOP = 37.5, GRIP = 30, ACCEL = 16, BRAKE = 40, CRAWL = 10, DRAFT_RANGE = 22.5, STEER_RATE = 2; // m/s, m/s² and m; top speed is 135 km/h. CRAWL: slower than any corner needs, and as slow as braking or coasting will take a car. GRIP (lateral, about 3 g) sized so a hairpin limits to ~19 m/s and the sweepers to 25-37
 // Lateral offset changes the real path: the inside of a corner is shorter but tighter, the outside longer but more forgiving.
 // Positive kappa is a right-hand turn on screen; positive lat is the right-hand side of the road.
 function pathAt(s, lat) { const k = at(s).kappa; const denom = clamp(1 - k * lat * WIDTH * 0.42, 0.6, 1.4); return { kappa: k / denom, progress: 1 / denom }; }
@@ -217,7 +222,7 @@ function gridOrder() { // drivers with a grid number take that slot; the rest fi
 function resetCars() {
   cars.length = 0; const grid = gridOrder();
   DRIVERS.forEach((d, i) => cars.push({
-    ...d, i, s: -30 - grid.indexOf(d) * 28, lat: grid.indexOf(d) % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, tow: 0, towing: null, slingT: 0, done: false, finishT: null,
+    ...d, i, s: -7.5 - grid.indexOf(d) * 7, lat: grid.indexOf(d) % 2 ? 0.6 : -0.6, v: 0, lap: 0, spin: 0, boostAvail: true, boostT: 0, tow: 0, towing: null, slingT: 0, done: false, finishT: null,
     dec: { line: "middle", pace: "steady", overtake: false, boost: false, conf: {}, probs: {} }, steer: 0, thinking: false, nextThink: i * 0.2, lastReq: null, lastRes: null, contact: null,
   }));
   buildCards();
@@ -238,14 +243,14 @@ function step(dt) {
   const order = ranking();
   for (const c of cars) {
     c.braking = false;
-    if (c.done) { c.v = lerp(c.v, 60, dt); advance(c, c.v * dt); continue; }
+    if (c.done) { c.v = lerp(c.v, 15, dt); advance(c, c.v * dt); continue; }
     if (c.spin > 0) { c.spin -= dt; c.v = lerp(c.v, 0, dt * 2); advance(c, c.v * dt); continue; }
     const sm = ((c.s % L) + L) % L;
-    const look = 40 + c.v * 0.55;
+    const look = 10 + c.v * 0.55; // m, a little beyond the braking distance from top speed
     // drafting: tucked in close behind a car on the same part of the road at speed, the air is easier, so the ceiling rises and a charge builds.
     // Pulling out of the tow (or Jev calling the pass) releases it as a slingshot: a short burst and a move to the other side of the car ahead.
     let tow = null, towF = 0;
-    for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < DRAFT_RANGE && Math.abs(o.lat - c.lat) < 0.5 && c.v > 80) { const f = 1 - gap / DRAFT_RANGE; if (f > towF) { towF = f; tow = o; } } }
+    for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < DRAFT_RANGE && Math.abs(o.lat - c.lat) < 0.5 && c.v > 20) { const f = 1 - gap / DRAFT_RANGE; if (f > towF) { towF = f; tow = o; } } }
     const armed = c.tow >= 0.5;
     if (tow) c.tow = Math.min(1, c.tow + dt / 1.5); else c.tow = Math.max(0, c.tow - dt);
     if (armed && c.slingT <= 0 && ((c.towing && !tow) || (tow && c.dec.overtake))) { c.slingT = 0.9 * c.tow; c.slingFrom = tow ?? c.towing; c.tow = 0; log(`${c.name} slingshots out of ${c.slingFrom.name}'s tow`); }
@@ -256,24 +261,24 @@ function step(dt) {
     // carries speed past the limit, which is faster if it sticks and a spin if it does not).
     const turn = nextTurn(sm); // +1 the next corner is a right-hander, -1 a left-hander
     // an overtake call pulls the car out to the open side of the rival directly ahead; a slingshot does the same with a burst
-    let blocker = null, bg = Infinity; for (const o of cars) if (o !== c && !o.done) { let gap = ((o.s - c.s) % L + L) % L; if (gap > L / 2) gap -= L; if (gap > -CAR_LEN && gap < 80 && gap < bg) { blocker = o; bg = gap; } } // ahead or alongside: the move is held until the car is clear past
-    const passing = (c.slingT > 0 && c.slingFrom && !c.slingFrom.done && ((c.slingFrom.s - c.s) % L + L) % L < 60) ? c.slingFrom : (c.dec.overtake && blocker);
+    let blocker = null, bg = Infinity; for (const o of cars) if (o !== c && !o.done) { let gap = ((o.s - c.s) % L + L) % L; if (gap > L / 2) gap -= L; if (gap > -CAR_LEN && gap < 20 && gap < bg) { blocker = o; bg = gap; } } // ahead or alongside: the move is held until the car is clear past
+    const passing = (c.slingT > 0 && c.slingFrom && !c.slingFrom.done && ((c.slingFrom.s - c.s) % L + L) % L < 15) ? c.slingFrom : (c.dec.overtake && blocker);
     const latT = passing ? -Math.sign(passing.lat || -c.lat || 1) * 0.85 : ({ inside: 0.85 * turn, middle: 0, outside: -0.85 * turn }[c.dec.line] ?? 0);
     c.steer = clamp((latT - c.lat) * 3, -1, 1); // wheel angle the code applies to get there, shown on the instruments
     c.lat = clamp(c.lat + c.steer * STEER_RATE * dt, -1, 1);
     const paceF = { attack: 1.15, steady: 0.95, cautious: 0.84 }[c.dec.pace] ?? 0.95; // steady sits just inside the grip tolerance, attack well past it
     const mult = c.slingT > 0 ? 1.18 : 1 + 0.1 * towF; // the tow and the slingshot raise the ceiling
     let target = V_TOP * mult;
-    for (let d = 0; d < look; d += 5) { const v = Math.min(V_TOP * mult, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
+    for (let d = 0; d < look; d += 1.25) { const v = Math.min(V_TOP * mult, cornerLimit(sm + d, c.lat)) * paceF; target = Math.min(target, Math.sqrt(v * v + 2 * BRAKE * d)); } // fastest speed now that can still brake to v by d
     target = Math.max(CRAWL, target);
     if (c.dec.overtake) target *= 1.06;
     if (c.dec.boost && c.boostAvail) { c.boostAvail = false; c.dec.boost = false; c.boostT = 1.4; log(`${c.name} hits the boost`); } // consume the decision so a new lap needs a fresh call
     if (c.boostT > 0) { c.boostT -= dt; target = V_TOP * 1.25; } // the driver's own boost ignores the corner cap: boosting into a corner is the risk Jev is asked about
     // blocking: a car directly ahead on the same part of the road caps speed
-    c.heldBy = null; for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 28 && Math.abs(o.lat - c.lat) < 0.5 && o.v * 1.0 < target) { c.heldBy = o; target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); } }
+    c.heldBy = null; for (const o of cars) if (o !== c && !o.done) { const gap = ((o.s - c.s) % L + L) % L; if (gap > 0 && gap < 7 && Math.abs(o.lat - c.lat) < 0.5 && o.v * 1.0 < target) { c.heldBy = o; target = Math.min(target, o.v * (c.dec.overtake ? 1.0 : 0.95)); } }
     // accelerate / brake
     const accel = ACCEL * (c.boostT > 0 ? 2 : c.slingT > 0 ? 1.6 : 1 + 0.5 * towF);
-    c.braking = c.v > target + 1; c.throttle = c.braking ? 0 : 1; // holding the cap still counts as on the throttle
+    c.braking = c.v > target + 0.25; c.throttle = c.braking ? 0 : 1; // holding the cap still counts as on the throttle
     if (c.v < target) c.v = Math.min(target, c.v + accel * dt); else c.v = Math.max(target, c.v - BRAKE * dt);
     // grip check: over the limit of the actual path is a risk that grows with the overshoot, not a certainty; straights never spin
     const over = c.v / (cornerLimit(sm, c.lat) * 1.05) - 1; // 5% tolerance so a steady car at the limit is safe; attack (12% over) is not
@@ -287,15 +292,15 @@ function step(dt) {
   if (cars.every((c) => c.done) && race.running) { race.running = false; log("Race over."); }
 }
 // ---------- contact ----------
-// Cars are 22 px long and 12 px wide. Two racing cars on the same bit of road are pushed apart: nose to tail along the track,
+// Cars are 6 m long and 3.25 m wide for contact (drawn a touch smaller). Two racing cars on the same bit of road are pushed apart: nose to tail along the track,
 // with the faster car handing speed to the one it hits; alongside, sideways off their lines. A hard hit can spin the car that took it.
-const CAR_LEN = 24, CAR_W = 13, LAT_PX = WIDTH * 0.42;
+const CAR_LEN = 6, CAR_W = 3.25, LAT_M = WIDTH * 0.42; // LAT_M: metres of road per unit of lat
 const lastBump = new Map(); // pair -> race time, so one scrape does not fill the log
 function collide() {
   for (let i = 0; i < cars.length; i++) for (let j = i + 1; j < cars.length; j++) {
     const a = cars[i], b = cars[j]; if (a.done || b.done) continue;
     let g = ((b.s - a.s) % L + L) % L; if (g > L / 2) g -= L; // signed gap, positive when b is ahead
-    const dl = (b.lat - a.lat) * LAT_PX;
+    const dl = (b.lat - a.lat) * LAT_M;
     if (Math.abs(g) >= CAR_LEN || Math.abs(dl) >= CAR_W) continue;
     const [back, front] = g > 0 ? [a, b] : [b, a], gap = Math.abs(g);
     let hard, kind, victim;
@@ -304,55 +309,49 @@ function collide() {
       const dv = Math.max(0, back.v - front.v); front.v += dv * 0.6; back.v -= dv * 0.6;
       hard = dv; kind = "rear-ended"; victim = front;
     } else { // alongside: shove apart sideways, the faster car holds its line better
-      const dir = Math.sign(dl) || (Math.random() < 0.5 ? 1 : -1), push = (CAR_W - Math.abs(dl)) / LAT_PX;
+      const dir = Math.sign(dl) || (Math.random() < 0.5 ? 1 : -1), push = (CAR_W - Math.abs(dl)) / LAT_M;
       const wa = b.v / (a.v + b.v + 1e-6); a.lat = clamp(a.lat - dir * push * wa, -1, 1); b.lat = clamp(b.lat + dir * push * (1 - wa), -1, 1);
-      hard = 8 + Math.abs(a.v - b.v) * 0.5; kind = "side by side with"; victim = a.v < b.v ? a : b;
+      hard = 2 + Math.abs(a.v - b.v) * 0.5; kind = "side by side with"; victim = a.v < b.v ? a : b;
     }
     const other = (c) => (c === a ? b : a);
     for (const c of [a, b]) c.contact = { with: other(c).name, t: race.t, kind: c === back ? (kind === "rear-ended" ? "ran into the back of" : kind) : (kind === "rear-ended" ? "was hit from behind by" : kind) };
     const key = `${a.name}|${b.name}`;
-    if (hard > 12 && (lastBump.get(key) ?? -9) < race.t - 1.5) {
+    if (hard > 3 && (lastBump.get(key) ?? -9) < race.t - 1.5) {
       lastBump.set(key, race.t);
       log(`${back.name} ${kind === "rear-ended" ? "runs into the back of" : "rubs wheels with"} ${front.name}`);
-      const p = clamp((hard - 30) / 80, 0, 0.6); // a firm hit is a scare, a hard one can spin the car that took it
+      const p = clamp((hard - 7.5) / 20, 0, 0.6); // hard is a closing speed in m/s: a firm hit is a scare, a hard one can spin the car that took it
       if (victim.spin <= 0 && Math.random() < p) { victim.spin = 1.2; victim.v *= 0.35; log(`💥 ${victim.name} is spun round by the contact!`); }
     }
   }
 }
 function ranking() { return [...cars].sort((a, b) => (a.finishT ?? Infinity) - (b.finishT ?? Infinity) || b.s - a.s); } // s already accumulates across laps
 
-// ---------- Jev: the driver's judgment ----------
+const entryWords = (f) => speak("track_ahead.entry", { f, vtop: V_TOP });
+const NEAR = 35; // m: how far away a rival still counts as nearby (world.mjs says the same number in words)
 const wheelWords = (s) => (Math.abs(s) < 0.1 ? "centred" : `${Math.round(s * 90)}° ${s < 0 ? "left" : "right"}`);
 
-function situation(c, sm) { // where the car stands against what the road needs, so the pace call is informed
-  const n = speedNeed(c, sm), f = n.f, limit = n.limit;
-  if (n.here) return c.v > limit * 1.02 ? `in ${f.name} over its limit: the tyres will not hold this for long` : c.v > limit * 0.9 ? `in ${f.name} right at its limit` : `in ${f.name} with speed in hand`;
-  if (limit >= V_TOP) return "nothing ahead needs braking";
-  const need = Math.max(0, (c.v * c.v - limit * limit) / (2 * BRAKE)); // road needed to slow to the feature's speed at full braking
-  return need === 0 ? `already at the speed ${f.name} needs` : n.dist <= need * 1.15 ? `at the braking point for ${f.name}: steady brakes now, attack commits past the limit` : n.dist <= need * 2 ? `braking zone for ${f.name} coming up` : `${f.name} is still some way off`;
-}
 function buildState(c, order) {
-  const sm = ((c.s % L) + L) % L, p = order.indexOf(c) + 1, f = nextFeature(sm);
+  const sm = ((c.s % L) + L) % L, p = order.indexOf(c) + 1, f = nextFeature(sm), n = speedNeed(c, sm);
+  const need = Math.max(0, (c.v * c.v - n.limit * n.limit) / (2 * BRAKE)); // road needed to slow to what the road needs, at full braking
+  const x = { c, sm, p, f, n, need, corner: nextCorner(sm), gripLimit: cornerLimit(sm, c.lat), vtop: V_TOP, cars, race, trace: {} };
   const gapTo = (o) => o ? (((o.s - c.s) % L + L) % L) : null;
   let ahead = null, behind = null;
-  for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < 140 && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < 140 && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
-  const roadPos = (lat) => bucket(lat, [[-0.7, "at the left edge"], [-0.25, "left of centre"], [0.25, "centre of the road"], [0.7, "right of centre"], [1e9, "at the right edge"]]);
-  const sideOf = (o) => { const d = o.lat - c.lat; return Math.abs(d) < 0.3 ? "directly in line with you" : d < 0 ? "to your left" : "to your right"; };
-  const pace = (o) => (o.spin > 0 ? "spinning, a place for the taking" : c.heldBy === o ? "holding you up: you are faster and stuck behind them" : o.v > c.v * 1.05 ? "pulling away" : o.v < c.v * 0.95 ? "slower than you" : "about the same pace");
-  const desc = (o, g, isAhead) => o ? { name: o.name, gap: bucket(g, [[30, "right on the bumper"], [70, "close"], [140, "a few car lengths"]]), road_position: `${roadPos(o.lat)}, ${sideOf(o)}`, ...(isAhead ? { pace: pace(o) } : {}), status: o.spin > 0 ? "spinning" : "racing" } : "nobody nearby";
-  return {
-    driver: { name: c.name, traits: c.traits, position: `${p} of ${cars.length}${p > 1 ? ", and places are only gained by passing" : ""}`, lap: `${c.lap + 1} of ${race.laps}`, boost: c.boostAvail ? "available (one use per lap)" : "used this lap", status: c.spin > 0 ? "recovering from a spin" : "racing" },
-    car: { speed: bucket(c.v, [[50, "slow"], [95, "cruising"], [135, "fast"], [1e9, "flat out"]]), situation: situation(c, sm), road_position: roadPos(c.lat), current: `${c.dec.pace} pace, taking the ${c.dec.line} line for ${nextCorner(sm)?.name ?? "the next corner"}`, grip: c.v > cornerLimit(sm, c.lat) * 0.95 ? "at the limit, tyres squealing" : "comfortable", contact: c.contact && race.t - c.contact.t < 2 ? `just ${c.contact.kind} ${c.contact.with}` : "none lately", tow: c.slingT > 0 ? "slingshotting right now" : c.towing ? `in ${c.towing.name}'s tow, ${c.tow >= 0.5 ? "slingshot ready: calling the pass now releases it" : "building a run"}` : "clean air" },
-    track_ahead: { next: f.dir ? `${f.name}, turning ${f.dir}` : f.name, distance: bucket(f.dist, [[60, "right now"], [160, "close"], [320, "medium"], [1e9, "far"]]), entry: f.entry, after_that: f.then, note: "corners are graded by how much braking they need, from a kink (flat out) through sweepers and medium and tight corners to a hairpin (walking pace); entering any corner faster than its grip allows causes a spin" },
-    rivals: { ahead: desc(ahead, ahead ? gapTo(ahead) : 0, true), behind: desc(behind, behind ? ((c.s - behind.s) % L + L) % L : 0, false) },
+  for (const o of cars) if (o !== c && !o.done) { const g = gapTo(o); const gBehind = ((c.s - o.s) % L + L) % L; if (g < NEAR && (!ahead || g < gapTo(ahead))) ahead = o; if (gBehind < NEAR && (!behind || gBehind < ((c.s - behind.s) % L + L) % L)) behind = o; }
+  const rival = (o, g, which) => { // phrases for one rival, traced under rivals.ahead.* or rivals.behind.*
+    const r = { ...x, o, g, which }, t = (k) => `rivals.${which}.${k.split(".").pop()}`;
+    if (!o) return speak("rivals.*", r, t("rivals.*.self"));
+    speak("rivals.*", r, t("rivals.*.self"));
+    return { name: o.name, gap: speak("rivals.*.gap", r, t("gap")), road_position: speak("rivals.*.road_position", r, t("road_position")), ...(which === "ahead" ? { pace: speak("rivals.ahead.pace", r) } : {}), status: speak("rivals.*.status", r, t("status")) };
   };
+  const state = {
+    driver: { name: c.name, traits: c.traits, position: speak("driver.position", x), lap: speak("driver.lap", x), boost: speak("driver.boost", x), status: speak("driver.status", x) },
+    car: { speed: speak("car.speed", x), situation: speak("car.situation", x), road_position: speak("car.road_position", x), current: speak("car.current", x), grip: speak("car.grip", x), contact: speak("car.contact", x), tow: speak("car.tow", x) },
+    track_ahead: { next: speak("track_ahead.next", x), distance: speak("track_ahead.distance", x), entry: speak("track_ahead.entry", x), after_that: speak("track_ahead.after_that", x), note: speak("track_ahead.note", x) },
+    rivals: { ahead: rival(ahead, ahead ? gapTo(ahead) : 0, "ahead"), behind: rival(behind, behind ? ((c.s - behind.s) % L + L) % L : 0, "behind") },
+  };
+  c.lastTrace = x.trace; // which case fired for each field, for the World view panel
+  return state;
 }
-const QUESTIONS = {
-  line: { type: "choice", instructions: "Which line should `driver` take through the next corner (see `track_ahead`), given `rivals`, `car.road_position` and the driver's `driver.traits`? Two cars in the same place make contact.", criteria: { inside: "Tight line, shortest distance, less forgiving if too fast", middle: "Neutral line", outside: "Wide line, more forgiving at speed, longer distance" } },
-  pace: { type: "choice", instructions: "How hard should `driver` push into `track_ahead.next`, given `car.situation`, `rivals` and `driver.traits`? The code brakes for corners at the chosen pace.", criteria: { attack: "Brake as late as possible and carry speed past the grip limit: faster if it sticks, a real risk of spinning", steady: "Drive at the limit, brake normally and stay in control", cautious: "Brake early and protect the position, giving up some time" } },
-  overtake: { type: "noul", instructions: "Should `driver` attempt to pass `rivals.ahead` before `track_ahead.next`? Going for it pulls the car out to the open side of the rival and pushes harder; staying put means following in their wheel tracks.", criteria: { true: "A rival is within reach ahead and a pass is on: the driver is being held up or is quicker, the road ahead gives room, and the risk suits the driver's traits. A ready slingshot from `car.tow` makes it far more likely to stick", false: "No rival within reach, the rival is genuinely quicker, or this driver would rather wait for a better moment. Following costs time when held up; contact costs speed and can spin either car" } },
-  boost: { type: "noul", instructions: "Should `driver` use the boost right now, considering `driver.boost`, `track_ahead` and `rivals`?", criteria: { true: "Boost is available and this moment (a straight or a pass) is a good use of it", false: "Boost is unavailable, or a better moment is coming" } },
-};
 async function think(c, order) {
   c.thinking = true;
   const state = buildState(c, order);
@@ -383,30 +382,30 @@ function draw() {
   ctx.clearRect(0, 0, cv.width, cv.height);
   // track ribbon
   ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.strokeStyle = "#1c2233"; ctx.lineWidth = WIDTH + 10; tracePath(); ctx.stroke();
-  ctx.strokeStyle = "#2a3247"; ctx.lineWidth = WIDTH; tracePath(); ctx.stroke();
+  ctx.strokeStyle = "#1c2233"; ctx.lineWidth = px(WIDTH) + 10; tracePath(); ctx.stroke();
+  ctx.strokeStyle = "#2a3247"; ctx.lineWidth = px(WIDTH); tracePath(); ctx.stroke();
   for (const f of FEATURES) { // name every feature, pushed off the road: to the outside of a corner, away from the middle for a straight
-    const p = at(f.mid), nx = Math.cos(p.h + Math.PI / 2), ny = Math.sin(p.h + Math.PI / 2);
-    const out = Math.sign(nx * (p.x - 550) + ny * (p.y - 370)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : out, off = WIDTH / 2 + 14;
+    const p = at(f.mid), X = px(p.x), Y = px(p.y), nx = Math.cos(p.h + Math.PI / 2), ny = Math.sin(p.h + Math.PI / 2);
+    const out = Math.sign(nx * (X - cv.width / 2) + ny * (Y - cv.height / 2)) || 1, side = isCorner(f) ? -Math.sign(p.kappa) || 1 : out, off = px(WIDTH) / 2 + 14;
     const dx = nx * side, align = dx > 0.4 ? "left" : dx < -0.4 ? "right" : "center"; // anchor the text on the side away from the road
-    label(f.name, p.x + dx * off, p.y + ny * side * off + 4, isCorner(f) ? "#8a93a6" : "#5d6780", align);
+    label(f.name, X + dx * off, Y + ny * side * off + 4, isCorner(f) ? "#8a93a6" : "#5d6780", align);
   }
   if (race.running || race.finished.length) { ctx.fillStyle = "#e8eaf0"; ctx.font = "bold 22px sans-serif"; ctx.textAlign = "left"; ctx.fillText(race.running ? `LAP ${currentLap()} / ${race.laps}` : "FINISH", 18, 34); }
   // start line
-  const s0 = at(0); ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(s0.x + Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y + Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.lineTo(s0.x - Math.cos(s0.h + Math.PI / 2) * WIDTH / 2, s0.y - Math.sin(s0.h + Math.PI / 2) * WIDTH / 2); ctx.stroke();
+  const s0 = at(0), hw = px(WIDTH) / 2; ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(px(s0.x) + Math.cos(s0.h + Math.PI / 2) * hw, px(s0.y) + Math.sin(s0.h + Math.PI / 2) * hw); ctx.lineTo(px(s0.x) - Math.cos(s0.h + Math.PI / 2) * hw, px(s0.y) - Math.sin(s0.h + Math.PI / 2) * hw); ctx.stroke();
   // cars
   for (const c of cars) {
-    const p = pos(c.s, c.lat);
-    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.h); if (c.spin > 0) ctx.rotate(c.spin * 9);
+    const p = pos(c.s, c.lat), X = px(p.x), Y = px(p.y);
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(p.h); if (c.spin > 0) ctx.rotate(c.spin * 9);
     if (c.boostT > 0) { ctx.fillStyle = "rgba(250,204,21,.8)"; ctx.fillRect(-22, -4, 10, 8); }
     if (c.slingT > 0) { ctx.fillStyle = "rgba(56,189,248,.8)"; ctx.fillRect(-34, -3, 22, 6); } else if (c.towing) { ctx.fillStyle = `rgba(56,189,248,${(0.25 + 0.5 * c.tow).toFixed(2)})`; ctx.fillRect(-20, -2, 8, 4); }
     if (c.contact && race.t - c.contact.t < 0.3) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.globalAlpha = 1 - (race.t - c.contact.t) / 0.3; ctx.strokeRect(-14, -9, 28, 18); ctx.globalAlpha = 1; } // flash on contact
     ctx.fillStyle = c.color; ctx.fillRect(-11, -6, 22, 12); ctx.fillStyle = "#111"; ctx.fillRect(-3, -5, 8, 10);
     ctx.restore();
-    ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(c.name, p.x + 14, p.y - 10);
+    ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(c.name, X + 14, Y - 10);
   }
 }
-function tracePath() { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)); ctx.closePath(); }
+function tracePath() { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(px(p.x), px(p.y)) : ctx.moveTo(px(p.x), px(p.y))); ctx.closePath(); }
 function label(t, x, y, col, align = "center") { // kept inside the canvas
   ctx.fillStyle = col; ctx.font = "bold 11px sans-serif"; ctx.textAlign = align;
   const w = ctx.measureText(t).width, left = align === "left" ? x : align === "right" ? x - w : x - w / 2;
@@ -424,7 +423,7 @@ function renderDebug() { // the exact request body a driver last sent and what c
 const currentLap = () => Math.min(race.laps, Math.max(1, ...cars.map((c) => c.lap + 1))); // the leader's lap
 function renderSide() { // standings and stats; the driver cards are built once and updated in place, so nothing flickers
   const order = ranking();
-  $("#standings").innerHTML = order.map((c, i) => `<div><span style="color:${c.color}">P${i + 1} ${c.name}</span><span>${c.done ? `finished ${c.finishT.toFixed(1)}s` : `lap ${Math.min(c.lap + 1, race.laps)} · ${Math.round(c.v)}`}</span></div>`).join("");
+  $("#standings").innerHTML = order.map((c, i) => `<div><span style="color:${c.color}">P${i + 1} ${c.name}</span><span>${c.done ? `finished ${c.finishT.toFixed(1)}s` : `lap ${Math.min(c.lap + 1, race.laps)} · ${Math.round(c.v * KMH)} km/h`}</span></div>`).join("");
   const avgLat = race.latency.length ? Math.round(race.latency.reduce((a, b) => a + b, 0) / race.latency.length) : 0;
   $("#stats").textContent = `${race.reqs} Jev requests · ${race.tokens.toLocaleString()} input tokens · $${race.cost.toFixed(5)} · avg ${avgLat} ms`;
   $("#racestate").textContent = race.running ? `Lap ${currentLap()} / ${race.laps} · ${race.t.toFixed(1)}s` : race.finished.length ? `Finished · ${race.t.toFixed(1)}s` : "";

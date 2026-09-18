@@ -7,16 +7,18 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%277%27 fill=%27%23f97316%27/%3E%3C/svg%3E">
 <style>
 :root { --bg:#0b0d12; --panel:#141822; --ink:#e8eaf0; --muted:#8a93a6; --line:#242a38; --accent:#f97316; --mono:ui-monospace,Menlo,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif; }
-* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 var(--sans); }
+* { box-sizing:border-box; } html, body { height:100%; } body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 var(--sans); display:flex; flex-direction:column; overflow:hidden; }
 header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
 header h1 { font-size:15px; margin:0; } header .sub { color:var(--muted); font-size:12px; }
 .ctl { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
 .ctl label { color:var(--muted); font-size:12px; display:flex; gap:4px; align-items:center; }
 select, button { font:inherit; color:inherit; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:5px 9px; }
-button { cursor:pointer; } button.icon { width:32px; padding:4px 0; text-align:center; font-size:14px; line-height:1; } button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
-main { display:grid; grid-template-columns: 1fr 380px; gap:10px; padding:10px 14px; }
-canvas { width:100%; background:#0f1320; border:1px solid var(--line); border-radius:10px; display:block; }
-.side { display:flex; flex-direction:column; gap:8px; overflow:auto; max-height: calc(100vh - 70px); }
+button { cursor:pointer; } .doclink { color:var(--muted); font-size:12px; text-decoration:none; border-bottom:1px dotted var(--muted); } .doclink:hover { color:var(--ink); } button.icon { width:32px; padding:4px 0; text-align:center; font-size:14px; line-height:1; } button.primary { background:var(--accent); border-color:var(--accent); color:#111; font-weight:600; }
+main { display:grid; grid-template-columns: 1fr 380px; gap:10px; padding:10px 14px; flex:1; min-height:0; }
+.stage { display:flex; flex-direction:column; min-height:0; }
+.stage .fit { flex:1; min-height:0; display:flex; justify-content:center; }
+canvas { max-width:100%; max-height:100%; width:auto; height:auto; background:#0f1320; border:1px solid var(--line); border-radius:10px; display:block; }
+.side { display:flex; flex-direction:column; gap:8px; overflow:auto; min-height:0; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; border-left:4px solid var(--c, #fff); }
 .card h3 { margin:0 0 2px; font-size:13px; display:flex; justify-content:space-between; }
 .card .traits { color:var(--muted); font-size:11px; margin-bottom:6px; }
@@ -34,10 +36,10 @@ canvas { width:100%; background:#0f1320; border:1px solid var(--line); border-ra
 .log { font-family:var(--mono); font-size:11px; color:var(--muted); max-height:140px; overflow:auto; }
 .log b { color:var(--ink); font-weight:500; }
 details summary { cursor:pointer; color:var(--muted); font-size:12px; }
-pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:360px; margin:6px 0 0; }
+pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:160px; margin:6px 0 0; }
 .debug .panes { display:grid; grid-template-columns: 3fr 2fr; gap:8px; } .debug .panes > div, main > div, .debug { min-width:0; } .debug pre { white-space:pre; } .debug h3 label { font-weight:400; } .debug select { padding:2px 6px; font-size:11px; }
 @media (max-width: 900px) { .debug .panes { grid-template-columns:1fr; } }
-@media (max-width: 900px) { main { grid-template-columns:1fr; } .side { max-height:none; } }
+@media (max-width: 900px) { body { overflow:auto; } main { grid-template-columns:1fr; flex:none; } .side { overflow:visible; } canvas { max-height:none; width:100%; } }
 </style>
 </head>
 <body>
@@ -52,12 +54,13 @@ pre { font:11px/1.35 var(--mono); background:#0b0d12; border:1px solid var(--lin
     <button id="reset" class="icon" title="Reset the race" aria-label="Reset the race">↺</button>
     <label>Track <select id="preset"><option value="original">Original</option><option value="cota">Circuit of the Americas</option></select></label>
     <button id="randomize" title="Code drafts five random circuits; Jev picks the one that makes the best race for these drivers">New track</button>
+    <a href="/docs.html" class="doclink" title="Every phrase the state can say, the condition that says it, and the questions">World view docs</a>
   </div>
 </header>
 <main>
-  <div>
-    <canvas id="c" width="1100" height="720"></canvas>
-    <div class="card debug" style="--c:#555;margin-top:8px">
+  <div class="stage">
+    <div class="fit"><canvas id="c" width="1100" height="720"></canvas></div>
+    <div class="card debug" style="--c:#555;margin-top:8px;flex:none">
       <h3>Debug: what Jev is sent <span class="stats"><label>Driver <select id="dbg"></select></label> <span id="dbgmeta"></span></span></h3>
       <div class="panes"><div><div class="stats">Request (state + questions)</div><pre id="raw">–</pre></div><div><div class="stats">Response</div><pre id="rawres">–</pre></div></div>
     </div>

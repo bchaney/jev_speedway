@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jev Speedway: world view</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Ccircle cx=%278%27 cy=%278%27 r=%277%27 fill=%27%23f97316%27/%3E%3C/svg%3E">
+<style>
+:root { --bg:#0b0d12; --panel:#141822; --ink:#e8eaf0; --muted:#8a93a6; --line:#242a38; --accent:#f97316; --mono:ui-monospace,Menlo,monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif; }
+* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.45 var(--sans); }
+header { padding:10px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
+header h1 { font-size:15px; margin:0; } header a { color:var(--muted); font-size:12px; }
+main { max-width:1200px; margin:0 auto; padding:14px 18px 40px; }
+p.lead { color:var(--muted); max-width:70ch; }
+h2 { font-size:14px; margin:26px 0 6px; } h2 small { color:var(--muted); font-weight:400; margin-left:8px; }
+table { width:100%; border-collapse:collapse; font:11.5px/1.45 var(--mono); }
+td { padding:3px 8px; vertical-align:top; border-bottom:1px solid #1a1f2c; }
+tr.field td { padding-top:14px; border-bottom:1px solid var(--line); font-family:var(--sans); font-size:12.5px; }
+tr.field b { color:var(--accent); } .about { color:var(--muted); margin-left:8px; }
+td.when { color:var(--muted); width:38%; } td.n { color:var(--muted); width:28px; text-align:right; }
+.q { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin:8px 0; }
+.q h3 { margin:0 0 4px; font-size:13px; } .q h3 span { color:var(--muted); font-weight:400; font-family:var(--mono); font-size:11px; margin-left:8px; }
+.q .instr { margin:0 0 6px; } .q table td { border:0; padding:2px 8px 2px 0; } .q td.k { color:var(--accent); font-family:var(--mono); white-space:nowrap; }
+code { font-family:var(--mono); font-size:11px; color:var(--ink); background:#0f1320; padding:0 3px; border-radius:3px; }
+</style>
+</head>
+<body>
+<header><h1>Jev Speedway: world view</h1><a href="/">← back to the race</a></header>
+<main>
+  <p class="lead">Every few tenths of a second each driver's situation is written out in words and sent to Jev with four questions. This page is generated from the same table the game reads, so it is exactly what Jev can be told and asked. For each field of the state, the cases are tried in order and the first whose condition holds supplies the phrase.</p>
+  <h2>The state <small>fields in the order they are sent</small></h2>
+  <div id="state"></div>
+  <h2>The questions <small>asked on every request</small></h2>
+  <div id="questions"></div>
+</main>
+<script type="module">
+import { WORLD, QUESTIONS } from "/world.mjs";
+const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/`([^`]+)`/g, "<code>$1</code>");
+document.querySelector("#state").innerHTML = `<table>${Object.entries(WORLD).map(([key, f]) => `<tr class="field"><td colspan="3"><b>${esc(key)}</b><span class="about">${esc(f.about)}</span></td></tr>` +
+  f.cases.map((k, i) => `<tr><td class="n">${i + 1}</td><td class="when">${esc(k.when)}</td><td>${esc(typeof k.say === "string" ? k.say : k.sample ?? "(computed)")}</td></tr>`).join("")).join("")}</table>`;
+document.querySelector("#questions").innerHTML = Object.entries(QUESTIONS).map(([id, q]) => `<div class="q"><h3>${esc(id)}<span>${esc(q.type)}${q.type === "noul" ? ": a probability that the answer is yes" : ": one option, with a probability for each"}</span></h3><p class="instr">${esc(q.instructions)}</p>
+  <table>${Object.entries(q.criteria).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table></div>`).join("");
+</script>
+</body>
+</html>
