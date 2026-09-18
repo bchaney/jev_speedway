@@ -1,5 +1,7 @@
 # Jev Speedway
 
+https://github.com/user-attachments/assets/d039d120-4c1f-4fac-94f3-151bbad27152
+
 A small top-down racing game where **code drives and Jev judges**. A 60 fps physics loop handles steering, grip,
 braking, and collisions. Every ~0.8 s each driver's situation is described in words and sent to
 [TypeSafe Jev](https://docs.typesafe.ai/) with four questions: line and pace (Choice), overtake and boost (Noul). Drivers differ only by a `traits` string in the state, which is enough to produce distinct
