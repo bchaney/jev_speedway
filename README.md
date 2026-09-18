@@ -14,6 +14,9 @@ npm start              # http://localhost:4343
 
 No dependencies; Node 20+. `server.mjs` serves `public/` and proxies `/api/evaluate` so the key stays server-side.
 `public/race.js` is the whole game: track spline, physics, the per-driver state builder, the Jev questions, and rendering.
+Everything physical is in metres, seconds and m/s: the track spline, the car sizes, the grip and braking constants, and every
+distance Jev is told (speeds are spoken in km/h). The canvas is 4 px to the metre, so a lap is roughly 550-650 m and top speed is 135 km/h;
+only drawing converts to pixels.
 Tracks: the original, a by-eye Circuit of the Americas, or **New track**, where code drafts five random F1-style circuits,
 describes each in words, and Jev picks the one that should make the best race for these drivers.
 Each track is classified into named features in circuit vocabulary (kinks, sweepers, medium and tight corners, hairpins,
