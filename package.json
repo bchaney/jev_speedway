@@ -1,0 +1,9 @@
+{
+  "name": "jev_speedway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A tiny top-down racing game where code drives the cars and TypeSafe Jev makes each driver's judgment calls.",
+  "scripts": { "start": "node server.mjs" },
+  "engines": { "node": ">=20" }
+}
