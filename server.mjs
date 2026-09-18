@@ -19,6 +19,7 @@ if (existsSync(envPath)) {
 }
 
 const PORT = Number(process.env.PORT || 4343);
+const HOST = process.env.HOST || "127.0.0.1"; // loopback only: the proxy spends the API key, so keep it off the LAN
 const MIME = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -65,8 +66,17 @@ async function evaluate({ provider, body }) {
   const r = await fetch(p.url, { method: "POST", headers, body: JSON.stringify(body) });
   const text = await r.text();
   let response;
-  try { response = JSON.parse(text); } catch { response = { error: text.slice(0, 2000) }; }
+  try { response = JSON.parse(text); } catch { response = { error: r.ok ? "Upstream returned a non-JSON response" : `Upstream error ${r.status}` }; }
+  if (!r.ok) response = sanitizeError(response, r.status); // never relay upstream account details to the browser
   return { status: r.status, latencyMs: Math.round(performance.now() - t0), response };
+}
+
+// Reduce an upstream error body to a plain message. Provider error payloads can carry
+// account identifiers and other metadata that the client has no need to see.
+function sanitizeError(response, status) {
+  const e = response?.error;
+  const message = typeof e === "string" ? e : typeof e?.message === "string" ? e.message : `Upstream error ${status}`;
+  return { error: message.slice(0, 2000) };
 }
 
 async function serveStatic(res, urlPath) {
@@ -103,9 +113,9 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const p = availableProviders();
   const live = Object.entries(p).filter(([k, v]) => k !== "mock" && v.hasKey).map(([k]) => k);
-  console.log(`jev_speedway running at http://localhost:${PORT}`);
+  console.log(`jev_speedway running at http://${HOST}:${PORT}`);
   console.log(live.length ? `Live providers: ${live.join(", ")}` : "No API key found; mock provider only. See .env.example.");
 });
