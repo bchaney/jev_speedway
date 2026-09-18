@@ -29,7 +29,7 @@ canvas { max-width:100%; max-height:100%; width:auto; height:auto; background:#0
 .inst { display:flex; align-items:center; gap:8px; margin:2px 0 6px; }
 .gauge { width:80px; height:8px; background:var(--line); border-radius:3px; overflow:hidden; } .gauge i { display:block; height:100%; width:0; background:#22c55e; transition:width .15s; }
 .lamp { font-size:9px; font-weight:700; letter-spacing:.5px; padding:2px 5px; border-radius:3px; background:#2a1717; color:#6b3535; } .lamp.on { background:#ef4444; color:#fff; box-shadow:0 0 8px #ef4444aa; }
-.wheel { width:28px; height:28px; color:#c9d0de; } .wheel g { transition:transform .2s; }
+.wheel { width:28px; height:28px; color:#c9d0de; } .wheel g { transform-box:fill-box; transform-origin:center; transition:transform .15s linear; }
 .deg { font-family:var(--mono); font-size:10px; color:var(--muted); min-width:60px; }
 .stand { font-family:var(--mono); font-size:12px; } .stand div { display:flex; justify-content:space-between; padding:2px 0; }
 .stats { color:var(--muted); font-size:11px; font-family:var(--mono); }

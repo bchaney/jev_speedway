@@ -474,7 +474,7 @@ function instruments() { // throttle gauge, brake lamp, wheel angle and the lap 
     const thr = $(`#thr${c.i}`); if (!thr) continue;
     thr.style.width = `${Math.round((c.throttle ?? 0) * 100)}%`; // what the code is doing: on the throttle, or on the brakes
     $(`#brk${c.i}`).classList.toggle("on", !!c.braking);
-    $(`#whl${c.i}`).setAttribute("transform", `rotate(${(c.steer * 90).toFixed(1)} 20 20)`);
+    $(`#whl${c.i}`).style.transform = `rotate(${(c.steer * 90).toFixed(1)}deg)`; // CSS rotate about the centre (see .wheel g), so the transition turns rather than swings
     $(`#deg${c.i}`).textContent = `${wheelWords(c.steer)} · ${c.dec.pace}`;
   }
 }
