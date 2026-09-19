@@ -1,6 +1,6 @@
 # Jev Speedway
 
-https://github.com/user-attachments/assets/d039d120-4c1f-4fac-94f3-151bbad27152
+https://github.com/user-attachments/assets/c7fb4c9b-dccf-41d7-bab4-06c858413c30
 
 A small top-down racing game where **code drives and Jev judges**. A 60 fps physics loop handles steering, grip,
 braking, and collisions. Every ~0.8 s each driver's situation is described in words and sent to
