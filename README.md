@@ -1,6 +1,6 @@
 # Jev Speedway
 
-https://github.com/user-attachments/assets/c7fb4c9b-dccf-41d7-bab4-06c858413c30
+https://github.com/user-attachments/assets/ba2714df-855a-449f-8b6a-7e09dc087ffb
 
 A small top-down racing game where **code drives and Jev judges**.
 
