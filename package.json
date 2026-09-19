@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "description": "A tiny top-down racing game where code drives the cars and TypeSafe Jev makes each driver's judgment calls.",
-  "scripts": { "start": "node server.mjs" },
+  "scripts": { "start": "node server.mjs", "readme": "node scripts/readme-world.mjs", "readme:check": "node scripts/readme-world.mjs --check" },
   "engines": { "node": ">=20" }
 }
